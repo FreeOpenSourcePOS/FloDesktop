@@ -17,13 +17,13 @@ const PORT = parseInt(process.env.PORT || '3001', 10);
 /**
  * Locate the Next.js static export directory.
  *
- * Dev build  → <repo-root>/flopos/frontend/out
+ * Dev build  → <repo-root>/frontend/out
  * Packaged   → <resourcesPath>/frontend-out   (see electron-builder extraResources)
  */
 function getFrontendDir(): string | null {
   const candidates = [
     // Development / unpackaged: relative to dist/
-    path.join(__dirname, '../../flopos/frontend/out'),
+    path.join(__dirname, '../../frontend/out'),
     // Packaged: electron-builder copies it to resources/frontend-out
     path.join(process.resourcesPath || '', 'frontend-out'),
   ];

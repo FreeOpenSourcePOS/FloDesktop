@@ -5,9 +5,9 @@
   "main": "dist/index.js",
   "scripts": {
     "dev": "npm run build && electron .",
-    "dev:frontend": "cd flopos/frontend && npm run dev",
+    "dev:frontend": "cd frontend && npm run dev",
     "build": "tsc",
-    "build:frontend": "cd flopos/frontend && npm ci && NEXT_PUBLIC_API_URL=http://localhost:3001/api npm run build",
+    "build:frontend": "cd frontend && npm ci && NEXT_PUBLIC_API_URL=http://localhost:3001/api npm run build",
     "build:all-platforms": "npm run build:frontend && npm run build && electron-builder --win --mac --linux",
     "build:win": "npm run build:frontend && npm run build && electron-builder --win",
     "build:mac": "npm run build:frontend && npm run build && electron-builder --mac",
@@ -68,7 +68,7 @@
         "to": "assets"
       },
       {
-        "from": "flopos/frontend/out",
+        "from": "frontend/out",
         "to": "frontend-out"
       }
     ],

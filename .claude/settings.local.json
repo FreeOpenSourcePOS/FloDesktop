@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls:*)",
+      "Bash(wc -l /Users/bkm/Sites/FloDesktop/main/routes/*.ts)",
+      "WebSearch",
+      "WebFetch(domain:npmtrends.com)",
+      "WebFetch(domain:www.npmjs.com)",
+      "WebFetch(domain:github.com)",
+      "Bash(git submodule:*)",
+      "Bash(npm install:*)",
+      "Bash(npm run:*)",
+      "Bash(git commit:*)",
+      "Bash(cp:*)",
+      "Bash(git rm:*)",
+      "Bash(rm -rf .git/modules/flopos)",
+      "Bash(git -C /Users/bkm/Sites/FloPOS status --short)",
+      "Bash(git -C /Users/bkm/Sites/FloPOS log --oneline -3)",
+      "Bash(git -C /Users/bkm/Sites/FloPOS ls-files --error-unmatch frontend/src/app/pos/page.tsx)",
+      "Bash(git -C /Users/bkm/Sites/FloPOS ls-files frontend/)",
+      "Bash(git -C /Users/bkm/Sites/FloPOS rm -r --cached frontend/)",
+      "Bash(git:*)"
+    ]
+  }
+}
