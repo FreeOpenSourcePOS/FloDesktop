@@ -1,0 +1,233 @@
+import { ipcMain, dialog, app, BrowserWindow } from 'electron';
+import * as path from 'path';
+import { getDatabase, createBackup, restoreBackup, now } from './db';
+import { getLocalIP } from './server';
+
+export function registerIpcHandlers(): void {
+  // Database backup/restore
+  ipcMain.handle('backup-database', async () => {
+    try {
+      const backupPath = createBackup();
+      return { success: true, path: backupPath };
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+  });
+
+  ipcMain.handle('restore-backup', async () => {
+    try {
+      const result = await dialog.showOpenDialog({
+        filters: [{ name: 'SQLite Database', extensions: ['db'] }],
+        properties: ['openFile'],
+      });
+
+      if (result.canceled || !result.filePaths.length) {
+        return { success: false, error: 'Cancelled' };
+      }
+
+      restoreBackup(result.filePaths[0]);
+      return { success: true };
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+  });
+
+  // Settings
+  ipcMain.handle('get-settings', async () => {
+    try {
+      const db = getDatabase();
+      const rows = db.prepare('SELECT key, value FROM settings').all() as { key: string; value: string }[];
+      const settings: Record<string, string> = {};
+      rows.forEach((row) => {
+        settings[row.key] = row.value;
+      });
+      return settings;
+    } catch (error: any) {
+      return { error: error.message };
+    }
+  });
+
+  ipcMain.handle('set-setting', async (event, key: string, value: string) => {
+    try {
+      const db = getDatabase();
+      db.prepare('INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, ?)')
+        .run(key, value, now());
+      return { success: true };
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+  });
+
+  // KDS info
+  ipcMain.handle('get-kds-info', async () => {
+    const localIP = getLocalIP();
+    const port = 3001;
+    return {
+      url: `http://${localIP}:${port}/kds`,
+      wsUrl: `ws://${localIP}:${port}/kds`,
+      localIP,
+      port,
+    };
+  });
+
+  // Window management
+  ipcMain.handle('open-kds-window', async () => {
+    const kdsWindow = new BrowserWindow({
+      width: 1200,
+      height: 800,
+      title: 'FloPos - Kitchen Display',
+      webPreferences: {
+        preload: path.join(__dirname, 'preload.js'),
+        contextIsolation: true,
+        nodeIntegration: false,
+      },
+    });
+
+    const localIP = getLocalIP();
+    kdsWindow.loadURL(`http://${localIP}:3001/kds`);
+  });
+
+  ipcMain.handle('get-app-info', async () => {
+    return {
+      version: app.getVersion(),
+      name: app.getName(),
+      electron: process.versions.electron,
+      node: process.versions.node,
+      platform: process.platform,
+    };
+  });
+
+  // Printers
+  ipcMain.handle('get-printers', async () => {
+    try {
+      const db = getDatabase();
+      const printers = db.prepare('SELECT * FROM printers ORDER BY name').all();
+      return printers;
+    } catch (error: any) {
+      return { error: error.message };
+    }
+  });
+
+  ipcMain.handle('save-printer', async (event, printer: any) => {
+    try {
+      const db = getDatabase();
+      if (printer.id) {
+        db.prepare(`
+          UPDATE printers SET name = ?, type = ?, connection_type = ?, ip_address = ?,
+            port = ?, usb_vendor_id = ?, usb_product_id = ?, is_default = ?, updated_at = ?
+          WHERE id = ?
+        `).run(printer.name, printer.type, printer.connection_type, printer.ip_address,
+          printer.port || 9100, printer.usb_vendor_id, printer.usb_product_id,
+          printer.is_default ? 1 : 0, now(), printer.id);
+      } else {
+        db.prepare(`
+          INSERT INTO printers (name, type, connection_type, ip_address, port, usb_vendor_id, usb_product_id, is_default, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(printer.name, printer.type, printer.connection_type, printer.ip_address,
+          printer.port || 9100, printer.usb_vendor_id, printer.usb_product_id,
+          printer.is_default ? 1 : 0, now(), now());
+      }
+      return { success: true };
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+  });
+
+  // Reports
+  ipcMain.handle('get-daily-summary', async () => {
+    try {
+      const db = getDatabase();
+      const today = new Date().toISOString().slice(0, 10);
+
+      const bills = db.prepare(`
+        SELECT COUNT(*) as bill_count, COALESCE(SUM(total), 0) as revenue
+        FROM bills WHERE date(created_at) = date(?) AND payment_status = 'paid'
+      `).get(today) as { bill_count: number; revenue: number };
+
+      const covers = db.prepare(`
+        SELECT COALESCE(SUM(guest_count), 0) as covers FROM orders
+        WHERE date(created_at) = date(?) AND status != 'cancelled'
+      `).get(today) as { covers: number };
+
+      const pendingOrders = db.prepare(`
+        SELECT COUNT(*) as count FROM orders WHERE status IN ('pending', 'preparing')
+      `).get() as { count: number };
+
+      return {
+        date: today,
+        revenue: bills.revenue,
+        bill_count: bills.bill_count,
+        covers: covers.covers,
+        pending_orders: pendingOrders.count,
+      };
+    } catch (error: any) {
+      return { error: error.message };
+    }
+  });
+
+  // User management
+  ipcMain.handle('get-users', async () => {
+    try {
+      const db = getDatabase();
+      const users = db.prepare('SELECT id, name, email, role, is_active, created_at FROM users').all();
+      return users;
+    } catch (error: any) {
+      return { error: error.message };
+    }
+  });
+
+  ipcMain.handle('create-user', async (event, userData: any) => {
+    try {
+      const bcrypt = require('bcryptjs');
+      const hashedPassword = bcrypt.hashSync(userData.password, 10);
+
+      const db = getDatabase();
+      const result = db.prepare(`
+        INSERT INTO users (name, email, password, pin, role, is_active, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+      `).run(userData.name, userData.email, hashedPassword, userData.pin || null,
+        userData.role || 'cashier', now(), now());
+
+      return { success: true, id: result.lastInsertRowid };
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+  });
+
+  ipcMain.handle('update-user', async (event, id: number, userData: any) => {
+    try {
+      const db = getDatabase();
+      const updates: string[] = [];
+      const params: any[] = [];
+
+      if (userData.name) { updates.push('name = ?'); params.push(userData.name); }
+      if (userData.email) { updates.push('email = ?'); params.push(userData.email); }
+      if (userData.pin !== undefined) { updates.push('pin = ?'); params.push(userData.pin); }
+      if (userData.role) { updates.push('role = ?'); params.push(userData.role); }
+      if (userData.is_active !== undefined) { updates.push('is_active = ?'); params.push(userData.is_active ? 1 : 0); }
+
+      if (updates.length === 0) return { success: false, error: 'No updates provided' };
+
+      updates.push('updated_at = ?');
+      params.push(now());
+      params.push(id);
+
+      db.prepare(`UPDATE users SET ${updates.join(', ')} WHERE id = ?`).run(...params);
+      return { success: true };
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+  });
+
+  ipcMain.handle('delete-user', async (event, id: number) => {
+    try {
+      const db = getDatabase();
+      db.prepare('DELETE FROM users WHERE id = ?').run(id);
+      return { success: true };
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+  });
+
+  console.log('[IPC] Handlers registered');
+}

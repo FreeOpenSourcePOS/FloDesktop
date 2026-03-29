@@ -1,0 +1,122 @@
+import { Router, Request, Response } from 'express';
+import { getDatabase, now } from '../db';
+
+const router = Router();
+
+router.get('/', (req: Request, res: Response) => {
+  try {
+    const db = getDatabase();
+    let query = 'SELECT * FROM categories WHERE deleted_at IS NULL';
+    const params: any[] = [];
+
+    if (req.query.active === 'true') {
+      query += ' AND is_active = 1';
+    }
+    if (req.query.root === 'true') {
+      query += ' AND parent_id IS NULL';
+    }
+    if (req.query.parent_id) {
+      query += ' AND parent_id = ?';
+      params.push(req.query.parent_id);
+    }
+
+    query += ' ORDER BY sort_order, name';
+
+    const categories = db.prepare(query).all(...params);
+
+    // Load children for each category
+    const categoriesWithChildren = categories.map((cat: any) => {
+      const children = db.prepare('SELECT * FROM categories WHERE parent_id = ? AND deleted_at IS NULL ORDER BY sort_order, name').all(cat.id);
+      return { ...cat, children };
+    });
+
+    res.json({ categories: categoriesWithChildren });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.get('/:id', (req: Request, res: Response) => {
+  try {
+    const db = getDatabase();
+    const category = db.prepare('SELECT * FROM categories WHERE id = ? AND deleted_at IS NULL').get(req.params.id);
+    if (!category) {
+      return res.status(404).json({ error: 'Category not found' });
+    }
+
+    const children = db.prepare('SELECT * FROM categories WHERE parent_id = ? AND deleted_at IS NULL ORDER BY sort_order, name').all(req.params.id);
+    const products = db.prepare('SELECT * FROM products WHERE category_id = ? AND deleted_at IS NULL').all(req.params.id);
+
+    res.json({ category: { ...category, children, products } });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.post('/', (req: Request, res: Response) => {
+  try {
+    const { name, description, parent_id, sort_order, is_active, color, icon } = req.body;
+
+    if (!name) {
+      return res.status(400).json({ error: 'Name is required' });
+    }
+
+    const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+
+    const db = getDatabase();
+    const result = db.prepare(`
+      INSERT INTO categories (name, slug, description, parent_id, sort_order, is_active, color, icon, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(name, slug, description || null, parent_id || null, sort_order || 0, is_active !== false ? 1 : 0, color || null, icon || null, now(), now());
+
+    const category = db.prepare('SELECT * FROM categories WHERE id = ?').get(result.lastInsertRowid);
+    res.status(201).json({ category });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.put('/:id', (req: Request, res: Response) => {
+  try {
+    const { name, description, parent_id, sort_order, is_active, color, icon } = req.body;
+    const db = getDatabase();
+
+    const category = db.prepare('SELECT * FROM categories WHERE id = ? AND deleted_at IS NULL').get(req.params.id);
+    if (!category) {
+      return res.status(404).json({ error: 'Category not found' });
+    }
+
+    const slug = name ? name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') : (category as any).slug;
+
+    db.prepare(`
+      UPDATE categories SET name = COALESCE(?, name), slug = ?, description = COALESCE(?, description),
+      parent_id = COALESCE(?, parent_id), sort_order = COALESCE(?, sort_order),
+      is_active = COALESCE(?, is_active), color = COALESCE(?, color), icon = COALESCE(?, icon),
+      updated_at = ?
+      WHERE id = ?
+    `).run(name, slug, description, parent_id, sort_order, is_active, color, icon, now(), req.params.id);
+
+    const updated = db.prepare('SELECT * FROM categories WHERE id = ?').get(req.params.id);
+    res.json({ category: updated });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.delete('/:id', (req: Request, res: Response) => {
+  try {
+    const db = getDatabase();
+    const category = db.prepare('SELECT * FROM categories WHERE id = ? AND deleted_at IS NULL').get(req.params.id);
+    if (!category) {
+      return res.status(404).json({ error: 'Category not found' });
+    }
+
+    // Soft delete
+    db.prepare('UPDATE categories SET deleted_at = ? WHERE id = ?').run(now(), req.params.id);
+    res.json({ message: 'Category deleted' });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+export const categoryRoutes = router;

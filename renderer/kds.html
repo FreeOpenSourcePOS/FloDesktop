@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' 'unsafe-eval' ws://localhost:* http://localhost:*">
+  <title>FloPos - Kitchen Display System</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #1a1a2e;
+      color: #eee;
+      min-height: 100vh;
+      padding: 20px;
+    }
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+      padding-bottom: 15px;
+      border-bottom: 2px solid #333;
+    }
+    h1 { color: #0078D7; }
+    .status { 
+      padding: 8px 16px; 
+      background: #333; 
+      border-radius: 20px;
+      font-size: 0.9rem;
+    }
+    .status.connected { background: #28a745; }
+    .status.disconnected { background: #dc3545; }
+    .orders {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+      gap: 20px;
+    }
+    .order {
+      background: #16213e;
+      border-radius: 12px;
+      padding: 20px;
+      border-left: 4px solid #0078D7;
+    }
+    .order.preparing { border-left-color: #ffc107; }
+    .order.ready { border-left-color: #28a745; }
+    .order-header {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 15px;
+    }
+    .order-number { font-size: 1.4rem; font-weight: bold; }
+    .order-time { color: #888; }
+    .order-items { margin-bottom: 15px; }
+    .item {
+      padding: 8px 0;
+      border-bottom: 1px solid #333;
+      display: flex;
+      justify-content: space-between;
+    }
+    .item:last-child { border-bottom: none; }
+    .qty { color: #0078D7; font-weight: bold; }
+    .actions { display: flex; gap: 10px; }
+    .btn {
+      flex: 1;
+      padding: 12px;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 1rem;
+      font-weight: bold;
+      transition: transform 0.1s;
+    }
+    .btn:active { transform: scale(0.95); }
+    .btn-prepare { background: #ffc107; color: #000; }
+    .btn-ready { background: #28a745; color: #fff; }
+    .btn-serve { background: #0078D7; color: #fff; }
+    .empty {
+      text-align: center;
+      padding: 60px;
+      color: #666;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>Kitchen Display System</h1>
+    <div id="status" class="status disconnected">Connecting...</div>
+  </div>
+  
+  <div id="orders" class="orders">
+    <div class="empty">Connecting to kitchen display service...</div>
+  </div>
+
+  <script>
+    let ws = null;
+    let stationId = null;
+
+    function connect() {
+      const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = `${protocol}//localhost:3001/kds`;
+      
+      ws = new WebSocket(wsUrl);
+      
+      ws.onopen = () => {
+        document.getElementById('status').textContent = 'Connected';
+        document.getElementById('status').className = 'status connected';
+        
+        // Auto-pair with first available station or station 1
+        ws.send(JSON.stringify({ type: 'pair', stationId: 'station-1' }));
+      };
+      
+      ws.onclose = () => {
+        document.getElementById('status').textContent = 'Disconnected - Reconnecting...';
+        document.getElementById('status').className = 'status disconnected';
+        setTimeout(connect, 3000);
+      };
+      
+      ws.onerror = () => {
+        ws.close();
+      };
+      
+      ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        if (data.type === 'orders') {
+          renderOrders(data.orders);
+        }
+      };
+    }
+
+    function renderOrders(orders) {
+      const container = document.getElementById('orders');
+      
+      if (!orders || orders.length === 0) {
+        container.innerHTML = '<div class="empty">No active orders for kitchen</div>';
+        return;
+      }
+      
+      container.innerHTML = orders.map(order => `
+        <div class="order ${order.status}">
+          <div class="order-header">
+            <span class="order-number">#${order.orderNumber}</span>
+            <span class="order-time">${formatTime(order.createdAt)}</span>
+          </div>
+          <div class="order-items">
+            ${order.items.map(item => `
+              <div class="item">
+                <span><span class="qty">${item.quantity}x</span> ${item.productName}</span>
+                ${item.notes ? `<span style="color:#ffc107;font-size:0.85rem">• ${item.notes}</span>` : ''}
+              </div>
+            `).join('')}
+          </div>
+          <div class="actions">
+            ${order.status === 'pending' ? `<button class="btn btn-prepare" onclick="updateStatus('${order.id}', 'preparing')">Prepare</button>` : ''}
+            ${order.status === 'preparing' ? `<button class="btn btn-ready" onclick="updateStatus('${order.id}', 'ready')">Ready</button>` : ''}
+            ${order.status === 'ready' ? `<button class="btn btn-serve" onclick="updateStatus('${order.id}', 'served')">Served</button>` : ''}
+          </div>
+        </div>
+      `).join('');
+    }
+
+    function formatTime(dateStr) {
+      const date = new Date(dateStr);
+      return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+    }
+
+    function updateStatus(orderId, status) {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'updateStatus', orderId, status, stationId }));
+      }
+    }
+
+    connect();
+  </script>
+</body>
+</html>
