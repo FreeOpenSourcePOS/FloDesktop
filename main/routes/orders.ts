@@ -69,7 +69,7 @@ router.get('/:id', (req: Request, res: Response) => {
 
 router.post('/', (req: Request, res: Response) => {
   try {
-    const { table_id, customer_id, type, guest_count, special_instructions, packaging_charge, items } = req.body;
+    const { table_id, customer_id, user_id, type, guest_count, special_instructions, packaging_charge, items } = req.body;
 
     if (!items || items.length === 0) {
       return res.status(400).json({ error: 'At least one item is required' });
@@ -96,10 +96,10 @@ router.post('/', (req: Request, res: Response) => {
 
     // Create order
     const orderResult = db.prepare(`
-      INSERT INTO orders (order_number, table_id, customer_id, type, guest_count, special_instructions,
+      INSERT INTO orders (order_number, table_id, customer_id, user_id, type, guest_count, special_instructions,
         packaging_charge, status, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
-    `).run(orderNumber, table_id || null, customer_id || null, type, guest_count || null,
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+    `).run(orderNumber, table_id || null, customer_id || null, user_id || null, type, guest_count || null,
       special_instructions || null, packaging_charge || 0, now(), now());
 
     const orderId = orderResult.lastInsertRowid;

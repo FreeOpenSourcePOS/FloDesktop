@@ -1,12 +1,22 @@
+/**
+ * /api/staff  — alias for /api/users, kept for frontend compatibility.
+ * All user records live in the `users` table.
+ * Roles: owner | manager | cashier | waiter | chef
+ * The chef role is used by KDS displays.
+ */
 import { Router, Request, Response } from 'express';
+import bcrypt from 'bcryptjs';
+import { v4 as uuidv4 } from 'uuid';
 import { getDatabase, now } from '../db';
 
 const router = Router();
 
+// ── List ──────────────────────────────────────────────────────────────────────
+
 router.get('/', (req: Request, res: Response) => {
   try {
     const db = getDatabase();
-    let query = 'SELECT * FROM staff WHERE 1=1';
+    let query = 'SELECT id, name, email, role, pin, is_active, created_at, updated_at FROM users WHERE 1=1';
     const params: any[] = [];
 
     if (req.query.role) {
@@ -29,24 +39,23 @@ router.get('/', (req: Request, res: Response) => {
   }
 });
 
+// ── Get one ───────────────────────────────────────────────────────────────────
+
 router.get('/:id', (req: Request, res: Response) => {
   try {
     const db = getDatabase();
-    const member = db.prepare(`
-      SELECT s.*, u.name as user_name, u.email as user_email, u.role as user_role
-      FROM staff s
-      LEFT JOIN users u ON s.user_id = u.id
-      WHERE s.id = ?
-    `).get(req.params.id);
+    const member = db.prepare(
+      'SELECT id, name, email, role, pin, is_active, created_at, updated_at FROM users WHERE id = ?'
+    ).get(req.params.id) as any;
 
     if (!member) {
       return res.status(404).json({ error: 'Staff member not found' });
     }
 
     const performance = db.prepare(`
-      SELECT COUNT(*) as orders_served, SUM(total) as total_sales
+      SELECT COUNT(*) as orders_served, COALESCE(SUM(total), 0) as total_sales
       FROM orders
-      WHERE served_by = ? AND date(created_at) = date('now')
+      WHERE user_id = ? AND date(created_at) = date('now')
     `).get(req.params.id);
 
     res.json({ staff: { ...member, performance } });
@@ -55,115 +64,141 @@ router.get('/:id', (req: Request, res: Response) => {
   }
 });
 
+// ── Create ────────────────────────────────────────────────────────────────────
+
 router.post('/', (req: Request, res: Response) => {
   try {
-    const { user_id, employee_code, role, permissions, hourly_rate, monthly_salary, joined_at } = req.body;
+    const { name, email, password, role, pin } = req.body;
 
-    if (!role) {
-      return res.status(400).json({ error: 'Role is required' });
+    if (!name || !password || !role) {
+      return res.status(400).json({ error: 'name, password, and role are required' });
+    }
+
+    const validRoles = ['owner', 'manager', 'cashier', 'waiter', 'chef'];
+    if (!validRoles.includes(role)) {
+      return res.status(400).json({ error: `role must be one of: ${validRoles.join(', ')}` });
     }
 
     const db = getDatabase();
 
-    if (user_id) {
-      const existing = db.prepare('SELECT * FROM staff WHERE user_id = ?').get(user_id);
+    if (email) {
+      const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
       if (existing) {
-        return res.status(400).json({ error: 'User is already assigned to another staff member' });
+        return res.status(400).json({ error: 'Email already in use' });
       }
     }
 
-    if (employee_code) {
-      const existing = db.prepare('SELECT * FROM staff WHERE employee_code = ?').get(employee_code);
-      if (existing) {
-        return res.status(400).json({ error: 'Employee code already exists' });
-      }
-    }
+    const id = uuidv4();
+    const hashedPassword = bcrypt.hashSync(password, 10);
 
-    const result = db.prepare(`
-      INSERT INTO staff (user_id, employee_code, role, permissions, hourly_rate, monthly_salary, is_active, joined_at, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
-    `).run(
-      user_id || null, employee_code || null, role,
-      permissions ? JSON.stringify(permissions) : null,
-      hourly_rate || null, monthly_salary || null,
-      joined_at || null, now(), now()
-    );
+    db.prepare(`
+      INSERT INTO users (id, name, email, password, role, pin, is_active, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+    `).run(id, name, email || null, hashedPassword, role, pin || null, now(), now());
 
-    const staff = db.prepare('SELECT * FROM staff WHERE id = ?').get(result.lastInsertRowid);
-    res.status(201).json({ staff });
+    const member = db.prepare(
+      'SELECT id, name, email, role, pin, is_active, created_at, updated_at FROM users WHERE id = ?'
+    ).get(id);
+
+    res.status(201).json({ staff: member });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
 });
 
+// ── Update ────────────────────────────────────────────────────────────────────
+
 router.put('/:id', (req: Request, res: Response) => {
   try {
-    const { user_id, employee_code, role, permissions, hourly_rate, monthly_salary, is_active, left_at } = req.body;
+    const { name, email, password, role, pin, is_active } = req.body;
     const db = getDatabase();
 
-    const member = db.prepare('SELECT * FROM staff WHERE id = ?').get(req.params.id);
+    const member = db.prepare('SELECT * FROM users WHERE id = ?').get(req.params.id) as any;
     if (!member) {
       return res.status(404).json({ error: 'Staff member not found' });
     }
 
+    if (role) {
+      const validRoles = ['owner', 'manager', 'cashier', 'waiter', 'chef'];
+      if (!validRoles.includes(role)) {
+        return res.status(400).json({ error: `role must be one of: ${validRoles.join(', ')}` });
+      }
+    }
+
+    if (email && email !== member.email) {
+      const existing = db.prepare('SELECT id FROM users WHERE email = ? AND id != ?').get(email, req.params.id);
+      if (existing) {
+        return res.status(400).json({ error: 'Email already in use' });
+      }
+    }
+
+    const hashedPassword = password ? bcrypt.hashSync(password, 10) : member.password;
+
     db.prepare(`
-      UPDATE staff SET
-        user_id = COALESCE(?, user_id),
-        employee_code = COALESCE(?, employee_code),
-        role = COALESCE(?, role),
-        permissions = COALESCE(?, permissions),
-        hourly_rate = COALESCE(?, hourly_rate),
-        monthly_salary = COALESCE(?, monthly_salary),
-        is_active = COALESCE(?, is_active),
-        left_at = COALESCE(?, left_at),
+      UPDATE users SET
+        name       = COALESCE(?, name),
+        email      = COALESCE(?, email),
+        password   = ?,
+        role       = COALESCE(?, role),
+        pin        = COALESCE(?, pin),
+        is_active  = COALESCE(?, is_active),
         updated_at = ?
       WHERE id = ?
     `).run(
-      user_id, employee_code, role,
-      permissions ? JSON.stringify(permissions) : null,
-      hourly_rate, monthly_salary, is_active, left_at,
+      name || null, email || null, hashedPassword,
+      role || null, pin || null,
+      is_active !== undefined ? (is_active ? 1 : 0) : null,
       now(), req.params.id
     );
 
-    const updated = db.prepare('SELECT * FROM staff WHERE id = ?').get(req.params.id);
+    const updated = db.prepare(
+      'SELECT id, name, email, role, pin, is_active, created_at, updated_at FROM users WHERE id = ?'
+    ).get(req.params.id);
+
     res.json({ staff: updated });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
 });
 
+// ── Delete ────────────────────────────────────────────────────────────────────
+
 router.delete('/:id', (req: Request, res: Response) => {
   try {
     const db = getDatabase();
-    const member = db.prepare('SELECT * FROM staff WHERE id = ?').get(req.params.id);
+    const member = db.prepare('SELECT * FROM users WHERE id = ?').get(req.params.id) as any;
     if (!member) {
       return res.status(404).json({ error: 'Staff member not found' });
     }
 
-    db.prepare('DELETE FROM staff WHERE id = ?').run(req.params.id);
+    // Prevent deleting the last owner
+    if (member.role === 'owner') {
+      const ownerCount = (db.prepare('SELECT COUNT(*) as c FROM users WHERE role = ?').get('owner') as any).c;
+      if (ownerCount <= 1) {
+        return res.status(400).json({ error: 'Cannot delete the last owner account' });
+      }
+    }
+
+    db.prepare('DELETE FROM users WHERE id = ?').run(req.params.id);
     res.json({ message: 'Staff member deleted' });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
 });
 
+// ── Activate / Deactivate ─────────────────────────────────────────────────────
+
 router.post('/:id/deactivate', (req: Request, res: Response) => {
   try {
     const db = getDatabase();
-    const member = db.prepare('SELECT * FROM staff WHERE id = ?').get(req.params.id);
-    if (!member) {
-      return res.status(404).json({ error: 'Staff member not found' });
-    }
+    const member = db.prepare('SELECT * FROM users WHERE id = ?').get(req.params.id) as any;
+    if (!member) return res.status(404).json({ error: 'Staff member not found' });
+    if (member.is_active === 0) return res.status(400).json({ error: 'Already deactivated' });
 
-    if ((member as any).is_active === 0) {
-      return res.status(400).json({ error: 'Staff member is already deactivated' });
-    }
-
-    db.prepare(`
-      UPDATE staff SET is_active = 0, left_at = ?, updated_at = ? WHERE id = ?
-    `).run(now(), now(), req.params.id);
-
-    const updated = db.prepare('SELECT * FROM staff WHERE id = ?').get(req.params.id);
+    db.prepare('UPDATE users SET is_active = 0, updated_at = ? WHERE id = ?').run(now(), req.params.id);
+    const updated = db.prepare(
+      'SELECT id, name, email, role, pin, is_active, created_at, updated_at FROM users WHERE id = ?'
+    ).get(req.params.id);
     res.json({ staff: updated });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -173,20 +208,14 @@ router.post('/:id/deactivate', (req: Request, res: Response) => {
 router.post('/:id/reactivate', (req: Request, res: Response) => {
   try {
     const db = getDatabase();
-    const member = db.prepare('SELECT * FROM staff WHERE id = ?').get(req.params.id);
-    if (!member) {
-      return res.status(404).json({ error: 'Staff member not found' });
-    }
+    const member = db.prepare('SELECT * FROM users WHERE id = ?').get(req.params.id) as any;
+    if (!member) return res.status(404).json({ error: 'Staff member not found' });
+    if (member.is_active === 1) return res.status(400).json({ error: 'Already active' });
 
-    if ((member as any).is_active === 1) {
-      return res.status(400).json({ error: 'Staff member is already active' });
-    }
-
-    db.prepare(`
-      UPDATE staff SET is_active = 1, left_at = NULL, updated_at = ? WHERE id = ?
-    `).run(now(), req.params.id);
-
-    const updated = db.prepare('SELECT * FROM staff WHERE id = ?').get(req.params.id);
+    db.prepare('UPDATE users SET is_active = 1, updated_at = ? WHERE id = ?').run(now(), req.params.id);
+    const updated = db.prepare(
+      'SELECT id, name, email, role, pin, is_active, created_at, updated_at FROM users WHERE id = ?'
+    ).get(req.params.id);
     res.json({ staff: updated });
   } catch (error: any) {
     res.status(500).json({ error: error.message });

@@ -12,6 +12,7 @@ import { staffRoutes } from './staff';
 import { settingsRoutes } from './settings';
 import { reportRoutes } from './reports';
 import { kdsRoutes } from './kds';
+import { kdsInfoRoutes } from './kds-info';
 
 export function registerRoutes(app: Express): void {
   // Auth routes
@@ -26,10 +27,12 @@ export function registerRoutes(app: Express): void {
   app.use('/api/tables', tableRoutes);
   app.use('/api/kitchen-stations', kitchenStationRoutes);
   app.use('/api/customers', customerRoutes);
-  app.use('/api/staff', staffRoutes);
+  app.use('/api/staff', staffRoutes);   // users with POS roles
+  app.use('/api/users', staffRoutes);   // same router, dual-mounted
   app.use('/api/settings', settingsRoutes);
   app.use('/api/reports', reportRoutes);
   app.use('/api/kds', kdsRoutes);
+  app.use('/api/kds-info', kdsInfoRoutes);
 
   // Tax preview
   app.post('/api/tax/preview', async (req, res) => {

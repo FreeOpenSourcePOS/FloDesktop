@@ -1,15 +1,18 @@
 import { app, BrowserWindow, ipcMain, dialog, Menu, Tray, nativeImage } from 'electron';
 import * as path from 'path';
+import { Bonjour } from 'bonjour-service';
 import { initDatabase, closeDatabase } from './db';
-import { startServer, stopServer } from './server';
+import { startServer, stopServer, getLocalIP } from './server';
 import { initPrinter, printReceipt, printKOT } from './printers/thermal';
 import { registerIpcHandlers } from './ipc';
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
+let bonjour: Bonjour | null = null;
 let isQuitting = false;
 
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
+const PORT = parseInt(process.env.PORT || '3001', 10);
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -34,11 +37,9 @@ function createWindow(): void {
     }
   });
 
-  if (isDev) {
-    mainWindow.loadURL('http://localhost:3001');
-  } else {
-    mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
-  }
+  // Always load from the embedded Express server (serves static Next.js export).
+  // This avoids file:// protocol issues and keeps dev/prod behaviour identical.
+  mainWindow.loadURL(`http://localhost:${PORT}`);
 
   mainWindow.on('close', (event) => {
     if (!isQuitting) {
@@ -64,35 +65,38 @@ function createTray(): void {
     const contextMenu = Menu.buildFromTemplate([
       { label: 'Open FloPos', click: () => mainWindow?.show() },
       { type: 'separator' },
-      { label: 'KDS Display', click: () => openKDS() },
-      { type: 'separator' },
       { label: 'Quit', click: () => { isQuitting = true; app.quit(); } },
     ]);
 
     tray.setToolTip('FloPos');
     tray.setContextMenu(contextMenu);
     tray.on('double-click', () => mainWindow?.show());
-  } catch (err) {
-    console.log('Tray icon not found, skipping tray creation');
+  } catch {
+    console.log('[Tray] Icon not found, skipping tray');
   }
 }
 
-function openKDS(): void {
-  const kdsWindow = new BrowserWindow({
-    width: 1200,
-    height: 800,
-    title: 'FloPos - Kitchen Display',
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-    },
-  });
+function startMdns(): void {
+  try {
+    bonjour = new Bonjour();
+    bonjour.publish({
+      name: 'FloPos',
+      type: 'http',
+      port: PORT,
+      host: 'flopos',   // resolves as flopos.local on the LAN
+      txt: { version: app.getVersion(), kds: `/kds` },
+    });
+    const ip = getLocalIP();
+    console.log(`[mDNS] Advertising flopos.local:${PORT}  (IP fallback: http://${ip}:${PORT})`);
+  } catch (err) {
+    console.warn('[mDNS] Could not start Bonjour:', err);
+  }
+}
 
-  if (isDev) {
-    kdsWindow.loadURL('http://localhost:3001/kds');
-  } else {
-    kdsWindow.loadFile(path.join(__dirname, '../renderer/kds.html'));
+function stopMdns(): void {
+  if (bonjour) {
+    bonjour.unpublishAll(() => bonjour?.destroy());
+    bonjour = null;
   }
 }
 
@@ -114,7 +118,6 @@ function createMenu(): void {
       label: 'Orders',
       submenu: [
         { label: 'View All Orders', accelerator: 'CmdOrCtrl+O', click: () => mainWindow?.webContents.send('view-orders') },
-        { label: 'Kitchen Display', accelerator: 'CmdOrCtrl+K', click: () => openKDS() },
       ],
     },
     {
@@ -158,11 +161,22 @@ function createMenu(): void {
 }
 
 function showAbout(): void {
+  const ip = getLocalIP();
   dialog.showMessageBox({
     type: 'info',
     title: 'About FloPos',
     message: 'FloPos Desktop',
-    detail: `Version: ${app.getVersion()}\nElectron: ${process.versions.electron}\nNode: ${process.versions.node}\n\nA self-hosted, offline-first Point of Sale system.\nYour data stays yours.`,
+    detail: [
+      `Version: ${app.getVersion()}`,
+      `Electron: ${process.versions.electron}`,
+      `Node: ${process.versions.node}`,
+      '',
+      'A self-hosted, offline-first Point of Sale system.',
+      'Your data stays yours.',
+      '',
+      `KDS URL: http://flopos.local:${PORT}/kds`,
+      `IP fallback: http://${ip}:${PORT}/kds`,
+    ].join('\n'),
   });
 }
 
@@ -175,6 +189,9 @@ async function initialize(): Promise<void> {
 
     console.log('[FloPos] Starting local server...');
     await startServer();
+
+    console.log('[FloPos] Starting mDNS advertisement...');
+    startMdns();
 
     console.log('[FloPos] Initializing printer...');
     await initPrinter();
@@ -217,6 +234,7 @@ app.on('before-quit', () => {
 
 app.on('quit', () => {
   console.log('[FloPos] Shutting down...');
+  stopMdns();
   stopServer();
   closeDatabase();
   console.log('[FloPos] Goodbye!');
