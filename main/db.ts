@@ -401,6 +401,7 @@ function seedData(): void {
   insert('gstin',               '');
   insert('state_code',          '');
   insert('tax_scheme',          'regular');
+  insert('billing_type',        'postpaid');
   insert('loyalty_expiry_days', '365');
   insert('cloud_server_url',    '');
   insert('cloud_connected',     'false');

@@ -32,6 +32,7 @@ function businessShape(s: Record<string, string>) {
     state_code:      s.state_code      || '',
     business_address: s.business_address || '',
     business_phone:  s.business_phone  || '',
+    billing_type:    s.billing_type    || 'postpaid',
     bill_show_name:    s.bill_show_name    !== 'false',
     bill_show_address: s.bill_show_address !== 'false',
     bill_show_phone:   s.bill_show_phone   !== 'false',
@@ -67,13 +68,13 @@ router.get('/business', (req: Request, res: Response) => {
 router.put('/business', (req: Request, res: Response) => {
   try {
     const { business_name, timezone, currency, country, gstin, state_code,
-      business_address, business_phone,
+      business_address, business_phone, billing_type,
       bill_show_name, bill_show_address, bill_show_phone, bill_show_gstn } = req.body;
 
     const db = getDatabase();
     upsertSettings(db, {
       business_name, timezone, currency, country, gstin, state_code,
-      business_address, business_phone,
+      business_address, business_phone, billing_type,
       bill_show_name, bill_show_address, bill_show_phone, bill_show_gstn,
     });
 

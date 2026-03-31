@@ -3,6 +3,39 @@ import { getDatabase, now } from '../db';
 
 const router = Router();
 
+router.get('/daily-stats', (req: Request, res: Response) => {
+  try {
+    const db = getDatabase();
+    const today = new Date().toISOString().slice(0, 10);
+
+    const salesToday = db.prepare(`
+      SELECT COALESCE(SUM(paid_amount), 0) as sales
+      FROM bills WHERE date(created_at) = date(?)
+    `).get(today) as { sales: number };
+
+    const runningOrders = db.prepare(`
+      SELECT COUNT(*) as count FROM orders WHERE status IN ('pending', 'preparing')
+    `).get() as { count: number };
+
+    const pendingOrders = db.prepare(`
+      SELECT COUNT(*) as count FROM orders WHERE status = 'pending'
+    `).get() as { count: number };
+
+    const tablesOccupied = db.prepare(`
+      SELECT COUNT(*) as count FROM tables WHERE status = 'occupied'
+    `).get() as { count: number };
+
+    res.json({
+      sales: salesToday.sales,
+      runningOrders: runningOrders.count,
+      pendingOrders: pendingOrders.count,
+      tablesOccupied: tablesOccupied.count,
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 router.get('/summary', (req: Request, res: Response) => {
   try {
     const db = getDatabase();
