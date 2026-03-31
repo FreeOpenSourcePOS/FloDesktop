@@ -4,7 +4,7 @@ import jwt from 'jsonwebtoken';
 import { getDatabase, now } from '../db';
 
 const router = Router();
-const JWT_SECRET = process.env.JWT_SECRET || 'flopos-local-secret-change-in-production';
+const JWT_SECRET = process.env.JWT_SECRET || 'flo-local-secret-change-in-production';
 const JWT_EXPIRES_IN = '24h';
 
 /**
@@ -18,7 +18,7 @@ function buildLocalTenant(db: ReturnType<typeof getDatabase>, userRole: string) 
 
   return {
     id: 1,
-    business_name:  s.business_name  || 'My Restaurant',
+    business_name:  s.business_name  || 'Shop',
     slug:           'local',
     database_name:  'local',
     business_type:  s.business_type  || 'restaurant',
@@ -66,6 +66,7 @@ router.post('/login', (req: Request, res: Response) => {
         name: user.name,
         email: user.email,
         role: user.role,
+        category_ids: user.category_ids ? JSON.parse(user.category_ids) : [],
       },
       // Single tenant — frontend auto-selects when tenants.length === 1
       tenants: [tenant],

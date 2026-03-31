@@ -5,13 +5,13 @@ import * as fs from 'fs';
 import * as bcrypt from 'bcryptjs';
 
 // Bump this whenever the schema changes incompatibly
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 7;
 
 let db: Database.Database;
 
 function getDbPath(): string {
   const userDataPath = app.isPackaged ? app.getPath('userData') : path.join(__dirname, '../../');
-  return path.join(userDataPath, 'flopos.db');
+  return path.join(userDataPath, 'flo.db');
 }
 
 function getBackupDir(): string {
@@ -51,7 +51,7 @@ export function closeDatabase(): void {
 
 export function createBackup(): string {
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const backupPath = path.join(getBackupDir(), `flopos-backup-${timestamp}.db`);
+  const backupPath = path.join(getBackupDir(), `flo-backup-${timestamp}.db`);
   db.backup(backupPath);
   console.log(`[DB] Backup created: ${backupPath}`);
   return backupPath;
@@ -128,6 +128,7 @@ function createSchema(): void {
       slug TEXT,
       color TEXT,
       icon TEXT,
+      deleted_at TEXT,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
@@ -158,10 +159,14 @@ function createSchema(): void {
     CREATE TABLE addon_groups (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
-      min_selections INTEGER DEFAULT 0,
-      max_selections INTEGER DEFAULT 1,
+      description TEXT,
+      is_required INTEGER DEFAULT 0,
+      min_selection INTEGER DEFAULT 0,
+      max_selection INTEGER DEFAULT 1,
       is_active INTEGER DEFAULT 1,
-      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      sort_order INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
 
     CREATE TABLE addons (
@@ -172,6 +177,7 @@ function createSchema(): void {
       is_active INTEGER DEFAULT 1,
       sort_order INTEGER DEFAULT 0,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (addon_group_id) REFERENCES addon_groups(id)
     );
 
@@ -184,9 +190,15 @@ function createSchema(): void {
     CREATE TABLE kitchen_stations (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
+      description TEXT,
+      category_ids TEXT,
       printer_ip TEXT,
+      printer_port INTEGER DEFAULT 9100,
+      printer_name TEXT,
       is_active INTEGER DEFAULT 1,
-      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      sort_order INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
 
     CREATE TABLE tables (
@@ -228,6 +240,7 @@ function createSchema(): void {
       role TEXT NOT NULL DEFAULT 'cashier'
         CHECK (role IN ('owner', 'manager', 'cashier', 'waiter', 'chef')),
       pin TEXT,
+      category_ids TEXT,
       is_active INTEGER DEFAULT 1,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -349,10 +362,10 @@ function createSchema(): void {
     CREATE TABLE printers (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
-      type TEXT NOT NULL,
-      connection_type TEXT NOT NULL,
+      connection_type TEXT NOT NULL CHECK (connection_type IN ('network', 'usb', 'webusb')),
       ip_address TEXT,
       port INTEGER DEFAULT 9100,
+      usb_device_path TEXT,
       is_default INTEGER DEFAULT 0,
       paper_width TEXT DEFAULT '80mm',
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -376,7 +389,7 @@ function seedData(): void {
     db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)').run(key, value);
 
   insert('schema_version',      String(SCHEMA_VERSION));
-  insert('business_name',       'My Restaurant');
+  insert('business_name',       'Shop');
   insert('country',             'IN');
   insert('currency',            'INR');
   insert('currency_symbol',     '₹');
@@ -397,7 +410,7 @@ function seedData(): void {
   db.prepare(`
     INSERT OR IGNORE INTO users (id, name, email, password, role)
     VALUES (?, ?, ?, ?, ?)
-  `).run('user-1', 'Owner', 'admin@flopos.local', hashedPassword, 'owner');
+  `).run('user-1', 'Owner', 'admin@flo.local', hashedPassword, 'owner');
 
   // Sample categories
   const cats = [
@@ -465,4 +478,21 @@ export function generateBillNumber(): string {
 
 export function now(): string {
   return new Date().toISOString();
+}
+
+/** Parse JSON string fields on order_item rows returned from SQLite.
+ *  Stored as JSON.stringify(value) — may be "null", "[...]", "{...}" etc.
+ *  Returns actual JS value (array / object / null) so the frontend can map/iterate. */
+export function parseItemJson(item: any): any {
+  const tryParse = (val: any) => {
+    if (typeof val !== 'string') return val;
+    try { return JSON.parse(val); } catch { return val; }
+  };
+  return {
+    ...item,
+    addons: tryParse(item.addons),
+    variant_selection: tryParse(item.variant_selection),
+    modifier_selection: tryParse(item.modifier_selection),
+    tax_breakdown: tryParse(item.tax_breakdown),
+  };
 }

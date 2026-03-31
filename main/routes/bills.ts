@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { getDatabase, generateBillNumber, now } from '../db';
+import { notifyKdsUpdate } from '../services/kds';
 
 const router = Router();
 
@@ -86,12 +87,12 @@ router.post('/generate', (req: Request, res: Response) => {
     const result = db.prepare(`
       INSERT INTO bills (bill_number, order_id, customer_id, subtotal, tax_amount, tax_breakdown,
         discount_amount, discount_type, discount_value, discount_reason,
-        delivery_charge, packaging_charge, round_off, total, payment_status, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unpaid', ?, ?)
+        delivery_charge, packaging_charge, round_off, total, paid_amount, balance, payment_status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unpaid', ?, ?)
     `).run(
       billNumber, order_id, order.customer_id, subtotal, taxAmount, order.tax_breakdown,
       discountAmount, order.discount_type, order.discount_value, order.discount_reason,
-      deliveryCharge, packagingCharge, roundOff, total, now(), now()
+      deliveryCharge, packagingCharge, roundOff, total, 0, total, now(), now()
     );
 
     const bill = db.prepare('SELECT * FROM bills WHERE id = ?').get(result.lastInsertRowid);
@@ -101,7 +102,7 @@ router.post('/generate', (req: Request, res: Response) => {
   }
 });
 
-router.post('/:id/recordPayment', (req: Request, res: Response) => {
+router.post('/:id/payment', (req: Request, res: Response) => {
   try {
     const { method, amount, transaction_id, notes } = req.body;
 
@@ -153,33 +154,36 @@ router.post('/:id/recordPayment', (req: Request, res: Response) => {
     }
 
     const newPaidAmount = bill.paid_amount + paidAmount;
-    const balance = bill.total - newPaidAmount;
-    const paymentStatus = balance <= 0 ? 'paid' : 'partial';
-    const paymentDetails = {
-      method,
-      amount: paidAmount,
-      transaction_id: transaction_id || null,
-      notes: notes || null,
-      paid_at: now(),
-      wallet_debited: walletDebited,
-    };
+    const newBalance = Math.max(0, bill.total - newPaidAmount);
+    const paymentStatus = newBalance <= 0.01 ? 'paid' : 'partial';
 
     db.prepare(`
       UPDATE bills SET paid_amount = ?, balance = ?, payment_status = ?,
-        payment_details = ?, paid_at = ?, updated_at = ?
+        payment_details = COALESCE(payment_details, ?) || ?,
+        paid_at = CASE WHEN ? = 'paid' THEN ? ELSE paid_at END,
+        updated_at = ?
       WHERE id = ?
     `).run(
-      newPaidAmount, balance, paymentStatus,
-      JSON.stringify(paymentDetails), now(), now(), req.params.id
+      newPaidAmount, newBalance, paymentStatus,
+      JSON.stringify({ method, amount: paidAmount, transaction_id, notes, timestamp: now() }),
+      ',' + JSON.stringify({ method, amount: paidAmount, transaction_id, notes, timestamp: now() }),
+      paymentStatus, paymentStatus === 'paid' ? now() : null,
+      now(), req.params.id
     );
 
     if (paymentStatus === 'paid') {
-      db.prepare("UPDATE orders SET status = 'completed', updated_at = ? WHERE id = ?")
-        .run(now(), bill.order_id);
+      db.prepare("UPDATE orders SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?")
+        .run(now(), now(), bill.order_id);
+      const order = db.prepare('SELECT table_id FROM orders WHERE id = ?').get(bill.order_id) as any;
+      if (order && order.table_id) {
+        db.prepare("UPDATE tables SET status = 'available', updated_at = ? WHERE id = ?")
+          .run(now(), order.table_id);
+      }
+      notifyKdsUpdate();
     }
 
     const updatedBill = db.prepare('SELECT * FROM bills WHERE id = ?').get(req.params.id);
-    res.json({ bill: updatedBill });
+    res.json({ bill: updatedBill, walletDebited });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }

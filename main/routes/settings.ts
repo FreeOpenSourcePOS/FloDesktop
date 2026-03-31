@@ -3,146 +3,62 @@ import { getDatabase, now } from '../db';
 
 const router = Router();
 
-router.get('/', (req: Request, res: Response) => {
-  try {
-    const db = getDatabase();
-    const settings = db.prepare('SELECT * FROM settings').all();
+// ── Helpers ────────────────────────────────────────────────────────────────
 
-    const settingsMap: Record<string, string> = {};
-    for (const s of settings) {
-      (settingsMap as any)[(s as any).key] = (s as any).value;
-    }
+function getAllSettings(db: ReturnType<typeof getDatabase>): Record<string, string> {
+  const rows = db.prepare('SELECT key, value FROM settings').all();
+  const s: Record<string, string> = {};
+  for (const row of rows) s[(row as any).key] = (row as any).value;
+  return s;
+}
 
-    res.json({ settings: settingsMap });
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
+function upsertSettings(db: ReturnType<typeof getDatabase>, entries: Record<string, any>): void {
+  const stmt = db.prepare(`
+    INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+  `);
+  for (const [key, val] of Object.entries(entries)) {
+    if (val !== undefined) stmt.run(key, String(val), now());
   }
-});
+}
 
-router.get('/:key', (req: Request, res: Response) => {
+function businessShape(s: Record<string, string>) {
+  return {
+    business_name:   s.business_name   || '',
+    timezone:        s.timezone        || 'Asia/Kolkata',
+    currency:        s.currency        || 'INR',
+    country:         s.country         || 'IN',
+    gstin:           s.gstin           || '',
+    state_code:      s.state_code      || '',
+    business_address: s.business_address || '',
+    business_phone:  s.business_phone  || '',
+    bill_show_name:    s.bill_show_name    !== 'false',
+    bill_show_address: s.bill_show_address !== 'false',
+    bill_show_phone:   s.bill_show_phone   !== 'false',
+    bill_show_gstn:    s.bill_show_gstn    === 'true',
+  };
+}
+
+function taxShape(s: Record<string, string>) {
+  return {
+    tax_registered:       s.tax_registered === 'true',
+    gstin:                s.gstin           || '',
+    state_code:           s.state_code      || '',
+    tax_scheme:           s.tax_scheme      || 'regular',
+    country:              s.country         || 'IN',
+    loyalty_enabled:      s.loyalty_enabled === 'true',
+    loyalty_expiry_days:  parseInt(s.loyalty_expiry_days  || '365'),
+    loyalty_points_per_rs: parseFloat(s.loyalty_points_per_rs || '1'),
+    loyalty_redeem_value: parseFloat(s.loyalty_redeem_value || '0.25'),
+  };
+}
+
+// ── Specific routes (must come BEFORE /:key wildcard) ─────────────────────
+
+router.get('/business', (req: Request, res: Response) => {
   try {
-    const db = getDatabase();
-    const setting = db.prepare('SELECT * FROM settings WHERE key = ?').get(req.params.key);
-
-    if (!setting) {
-      return res.status(404).json({ error: 'Setting not found' });
-    }
-
-    res.json({ setting });
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-router.put('/:key', (req: Request, res: Response) => {
-  try {
-    const { value } = req.body;
-
-    if (value === undefined) {
-      return res.status(400).json({ error: 'Value is required' });
-    }
-
-    const db = getDatabase();
-    db.prepare(`
-      INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
-      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
-    `).run(req.params.key, value, now());
-
-    const setting = db.prepare('SELECT * FROM settings WHERE key = ?').get(req.params.key);
-    res.json({ setting });
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-router.get('/tax/info', (req: Request, res: Response) => {
-  try {
-    const db = getDatabase();
-    const settings = db.prepare('SELECT * FROM settings').all();
-
-    const settingsMap: Record<string, string> = {};
-    for (const s of settings) {
-      (settingsMap as any)[(s as any).key] = (s as any).value;
-    }
-
-    res.json({
-      taxSettings: {
-        tax_registered: settingsMap.tax_registered === 'true',
-        gstin: settingsMap.gstin || '',
-        state_code: settingsMap.state_code || '',
-        tax_scheme: settingsMap.tax_scheme || 'regular',
-        country: settingsMap.country || 'IN',
-      }
-    });
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-router.put('/tax', (req: Request, res: Response) => {
-  try {
-    const { tax_registered, gstin, state_code, tax_scheme } = req.body;
-
-    const db = getDatabase();
-    const upsert = db.prepare(`
-      INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
-      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
-    `);
-
-    if (tax_registered !== undefined) {
-      upsert.run('tax_registered', String(tax_registered), now());
-    }
-    if (gstin !== undefined) {
-      upsert.run('gstin', gstin, now());
-    }
-    if (state_code !== undefined) {
-      upsert.run('state_code', state_code, now());
-    }
-    if (tax_scheme !== undefined) {
-      upsert.run('tax_scheme', tax_scheme, now());
-    }
-
-    const settings = db.prepare('SELECT * FROM settings').all();
-    const settingsMap: Record<string, string> = {};
-    for (const s of settings) {
-      (settingsMap as any)[(s as any).key] = (s as any).value;
-    }
-
-    res.json({
-      taxSettings: {
-        tax_registered: settingsMap.tax_registered === 'true',
-        gstin: settingsMap.gstin || '',
-        state_code: settingsMap.state_code || '',
-        tax_scheme: settingsMap.tax_scheme || 'regular',
-        country: settingsMap.country || 'IN',
-      }
-    });
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-router.get('/business/info', (req: Request, res: Response) => {
-  try {
-    const db = getDatabase();
-    const settings = db.prepare('SELECT * FROM settings').all();
-
-    const settingsMap: Record<string, string> = {};
-    for (const s of settings) {
-      (settingsMap as any)[(s as any).key] = (s as any).value;
-    }
-
-    res.json({
-      businessSettings: {
-        business_name: settingsMap.business_name || 'My Restaurant',
-        country: settingsMap.country || 'IN',
-        currency: settingsMap.currency || 'INR',
-        timezone: settingsMap.timezone || 'Asia/Kolkata',
-        address: settingsMap.address || '',
-        phone: settingsMap.phone || '',
-        email: settingsMap.email || '',
-      }
-    });
+    const s = getAllSettings(getDatabase());
+    res.json(businessShape(s));
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -150,61 +66,51 @@ router.get('/business/info', (req: Request, res: Response) => {
 
 router.put('/business', (req: Request, res: Response) => {
   try {
-    const { business_name, country, currency, timezone, address, phone, email } = req.body;
+    const { business_name, timezone, currency, country, gstin, state_code,
+      business_address, business_phone,
+      bill_show_name, bill_show_address, bill_show_phone, bill_show_gstn } = req.body;
 
     const db = getDatabase();
-    const upsert = db.prepare(`
-      INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
-      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
-    `);
-
-    if (business_name !== undefined) upsert.run('business_name', business_name, now());
-    if (country !== undefined) upsert.run('country', country, now());
-    if (currency !== undefined) upsert.run('currency', currency, now());
-    if (timezone !== undefined) upsert.run('timezone', timezone, now());
-    if (address !== undefined) upsert.run('address', address, now());
-    if (phone !== undefined) upsert.run('phone', phone, now());
-    if (email !== undefined) upsert.run('email', email, now());
-
-    const settings = db.prepare('SELECT * FROM settings').all();
-    const settingsMap: Record<string, string> = {};
-    for (const s of settings) {
-      (settingsMap as any)[(s as any).key] = (s as any).value;
-    }
-
-    res.json({
-      businessSettings: {
-        business_name: settingsMap.business_name || 'My Restaurant',
-        country: settingsMap.country || 'IN',
-        currency: settingsMap.currency || 'INR',
-        timezone: settingsMap.timezone || 'Asia/Kolkata',
-        address: settingsMap.address || '',
-        phone: settingsMap.phone || '',
-        email: settingsMap.email || '',
-      }
+    upsertSettings(db, {
+      business_name, timezone, currency, country, gstin, state_code,
+      business_address, business_phone,
+      bill_show_name, bill_show_address, bill_show_phone, bill_show_gstn,
     });
+
+    res.json(businessShape(getAllSettings(db)));
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
 });
 
-router.get('/loyalty/info', (req: Request, res: Response) => {
+router.get('/tax', (req: Request, res: Response) => {
   try {
+    const s = getAllSettings(getDatabase());
+    res.json(taxShape(s));
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.put('/tax', (req: Request, res: Response) => {
+  try {
+    const { tax_registered, gstin, state_code, tax_scheme, country } = req.body;
     const db = getDatabase();
-    const settings = db.prepare('SELECT * FROM settings').all();
+    upsertSettings(db, { tax_registered, gstin, state_code, tax_scheme, country });
+    res.json(taxShape(getAllSettings(db)));
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
 
-    const settingsMap: Record<string, string> = {};
-    for (const s of settings) {
-      (settingsMap as any)[(s as any).key] = (s as any).value;
-    }
-
+router.get('/loyalty', (req: Request, res: Response) => {
+  try {
+    const s = getAllSettings(getDatabase());
     res.json({
-      loyaltySettings: {
-        loyalty_enabled: settingsMap.loyalty_enabled === 'true',
-        loyalty_expiry_days: parseInt(settingsMap.loyalty_expiry_days || '365'),
-        loyalty_points_per_rs: parseFloat(settingsMap.loyalty_points_per_rs || '1'),
-        loyalty_redeem_value: parseFloat(settingsMap.loyalty_redeem_value || '0.25'),
-      }
+      loyalty_enabled:       s.loyalty_enabled === 'true',
+      loyalty_expiry_days:   parseInt(s.loyalty_expiry_days  || '365'),
+      loyalty_points_per_rs: parseFloat(s.loyalty_points_per_rs || '1'),
+      loyalty_redeem_value:  parseFloat(s.loyalty_redeem_value || '0.25'),
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -214,32 +120,58 @@ router.get('/loyalty/info', (req: Request, res: Response) => {
 router.put('/loyalty', (req: Request, res: Response) => {
   try {
     const { loyalty_enabled, loyalty_expiry_days, loyalty_points_per_rs, loyalty_redeem_value } = req.body;
-
     const db = getDatabase();
-    const upsert = db.prepare(`
+    upsertSettings(db, { loyalty_enabled, loyalty_expiry_days, loyalty_points_per_rs, loyalty_redeem_value });
+    const s = getAllSettings(db);
+    res.json({
+      loyalty_enabled:       s.loyalty_enabled === 'true',
+      loyalty_expiry_days:   parseInt(s.loyalty_expiry_days  || '365'),
+      loyalty_points_per_rs: parseFloat(s.loyalty_points_per_rs || '1'),
+      loyalty_redeem_value:  parseFloat(s.loyalty_redeem_value || '0.25'),
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ── Generic key-value routes ───────────────────────────────────────────────
+
+router.get('/', (req: Request, res: Response) => {
+  try {
+    const s = getAllSettings(getDatabase());
+    res.json({ settings: s });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.get('/:key', (req: Request, res: Response) => {
+  try {
+    const db = getDatabase();
+    const setting = db.prepare('SELECT * FROM settings WHERE key = ?').get(req.params.key);
+    if (!setting) {
+      return res.status(404).json({ error: 'Setting not found' });
+    }
+    res.json({ setting });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.put('/:key', (req: Request, res: Response) => {
+  try {
+    const { value } = req.body;
+    if (value === undefined) {
+      return res.status(400).json({ error: 'Value is required' });
+    }
+    const db = getDatabase();
+    db.prepare(`
       INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
-    `);
+    `).run(req.params.key, value, now());
 
-    if (loyalty_enabled !== undefined) upsert.run('loyalty_enabled', String(loyalty_enabled), now());
-    if (loyalty_expiry_days !== undefined) upsert.run('loyalty_expiry_days', String(loyalty_expiry_days), now());
-    if (loyalty_points_per_rs !== undefined) upsert.run('loyalty_points_per_rs', String(loyalty_points_per_rs), now());
-    if (loyalty_redeem_value !== undefined) upsert.run('loyalty_redeem_value', String(loyalty_redeem_value), now());
-
-    const settings = db.prepare('SELECT * FROM settings').all();
-    const settingsMap: Record<string, string> = {};
-    for (const s of settings) {
-      (settingsMap as any)[(s as any).key] = (s as any).value;
-    }
-
-    res.json({
-      loyaltySettings: {
-        loyalty_enabled: settingsMap.loyalty_enabled === 'true',
-        loyalty_expiry_days: parseInt(settingsMap.loyalty_expiry_days || '365'),
-        loyalty_points_per_rs: parseFloat(settingsMap.loyalty_points_per_rs || '1'),
-        loyalty_redeem_value: parseFloat(settingsMap.loyalty_redeem_value || '0.25'),
-      }
-    });
+    const setting = db.prepare('SELECT * FROM settings WHERE key = ?').get(req.params.key);
+    res.json({ setting });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }

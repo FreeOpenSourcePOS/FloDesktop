@@ -8,11 +8,15 @@ import * as fs from 'fs';
 import { registerRoutes } from './routes';
 import { setupKdsWebSocket } from './services/kds';
 
-let server: http.Server;
+let server: http.Server | null = null;
 let app: Express;
 let wss: WebSocketServer;
 
 const PORT = parseInt(process.env.PORT || '3001', 10);
+
+export function isServerRunning(): boolean {
+  return server !== null;
+}
 
 /**
  * Locate the Next.js static export directory.
@@ -23,7 +27,7 @@ const PORT = parseInt(process.env.PORT || '3001', 10);
 function getFrontendDir(): string | null {
   const candidates = [
     // Development / unpackaged: relative to dist/
-    path.join(__dirname, '../../frontend/out'),
+    path.join(__dirname, '../frontend/out'),
     // Packaged: electron-builder copies it to resources/frontend-out
     path.join(process.resourcesPath || '', 'frontend-out'),
   ];
@@ -47,7 +51,7 @@ export function startServer(): Promise<void> {
     app.get('/api/health', (_req: Request, res: Response) => {
       res.json({
         status: 'ok',
-        service: 'FloPos Local API',
+        service: 'Flo Local API',
         version: '1.0.0',
         timestamp: new Date().toISOString(),
       });
@@ -64,7 +68,13 @@ export function startServer(): Promise<void> {
       app.use(express.static(frontendDir));
 
       // SPA fallback: any unknown path returns index.html so Next.js
-      // client-side routing works. Exclude /api and /kds (WebSocket upgrade path).
+      // client-side routing works. Exclude /api (API routes).
+      app.get(/^(?!\/api).*$/, (_req: Request, res: Response) => {
+        res.sendFile(path.join(frontendDir, 'index.html'));
+      });
+
+      // SPA fallback: any unknown path returns index.html so Next.js
+      // client-side routing works. Exclude /api (API routes) and /kds (handled above).
       app.get(/^(?!\/api|\/kds).*$/, (_req: Request, res: Response) => {
         res.sendFile(path.join(frontendDir, 'index.html'));
       });
@@ -73,7 +83,7 @@ export function startServer(): Promise<void> {
       app.get('/', (_req: Request, res: Response) => {
         res.send(`
           <html><body style="font-family:sans-serif;padding:2rem">
-            <h2>FloPos – Frontend not built</h2>
+            <h2>Flo – Frontend not built</h2>
             <p>Run <code>npm run build:frontend</code> then restart the app.</p>
           </body></html>
         `);
@@ -89,18 +99,19 @@ export function startServer(): Promise<void> {
     server = app.listen(PORT, '0.0.0.0', () => {
       console.log(`[Server] HTTP server running on http://localhost:${PORT}`);
 
-      // KDS WebSocket — attached to the same HTTP server
-      wss = new WebSocketServer({ server, path: '/kds' });
-      setupKdsWebSocket(wss);
-      console.log(`[Server] KDS WebSocket running on ws://localhost:${PORT}/kds`);
+      if (server) {
+        wss = new WebSocketServer({ server, path: '/kds' });
+        setupKdsWebSocket(wss);
+        console.log(`[Server] KDS WebSocket running on ws://localhost:${PORT}/kds`);
+      }
 
       resolve();
     });
 
-    server.on('error', (err: NodeJS.ErrnoException) => {
+    server?.on('error', (err: NodeJS.ErrnoException) => {
       if (err.code === 'EADDRINUSE') {
         console.log(`[Server] Port ${PORT} in use, trying ${PORT + 1}`);
-        server.listen(PORT + 1, '0.0.0.0');
+        server?.listen(PORT + 1, '0.0.0.0');
       } else {
         reject(err);
       }

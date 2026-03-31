@@ -12,6 +12,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   getAppInfo: () => ipcRenderer.invoke('get-app-info'),
 
+  getStatus: () => ipcRenderer.invoke('get-status'),
+
   getPrinters: () => ipcRenderer.invoke('get-printers'),
   savePrinter: (printer: any) => ipcRenderer.invoke('save-printer', printer),
 
@@ -21,6 +23,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   createUser: (userData: any) => ipcRenderer.invoke('create-user', userData),
   updateUser: (id: number, userData: any) => ipcRenderer.invoke('update-user', id, userData),
   deleteUser: (id: number) => ipcRenderer.invoke('delete-user', id),
+
+  getUpdateStatus: () => ipcRenderer.invoke('get-update-status'),
+  checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
+  onUpdateStatus: (callback: (status: any) => void) => {
+    ipcRenderer.on('update-status', (_event: any, status: any) => callback(status));
+  },
 
   onMenuAction: (callback: (channel: string) => void) => {
     const channels = [

@@ -75,7 +75,7 @@ export function registerIpcHandlers(): void {
     const kdsWindow = new BrowserWindow({
       width: 1200,
       height: 800,
-      title: 'FloPos - Kitchen Display',
+      title: 'Flo - Kitchen Display',
       webPreferences: {
         preload: path.join(__dirname, 'preload.js'),
         contextIsolation: true,

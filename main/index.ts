@@ -1,10 +1,115 @@
-import { app, BrowserWindow, ipcMain, dialog, Menu, Tray, nativeImage } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, Menu, Tray, nativeImage, shell } from 'electron';
 import * as path from 'path';
+import * as fs from 'fs';
 import { Bonjour } from 'bonjour-service';
 import { initDatabase, closeDatabase } from './db';
-import { startServer, stopServer, getLocalIP } from './server';
+import { startServer, stopServer, getLocalIP, isServerRunning } from './server';
 import { initPrinter, printReceipt, printKOT } from './printers/thermal';
 import { registerIpcHandlers } from './ipc';
+import log from 'electron-log/main';
+import { autoUpdater } from 'electron-updater';
+
+
+log.initialize();
+log.transports.file.level = 'info';
+log.transports.console.level = 'debug';
+const logPath = log.transports.file.getFile().path.replace(/[^\/\\]+$/, '');
+console.log('[Log] Log files location:', logPath);
+
+let updateAvailable = false;
+let updateDownloaded = false;
+
+function setupAutoUpdater(): void {
+  autoUpdater.logger = log;
+  autoUpdater.autoDownload = false;
+  autoUpdater.autoInstallOnAppQuit = true;
+
+  autoUpdater.on('checking-for-update', () => {
+    console.log('[Update] Checking for updates...');
+    mainWindow?.webContents.send('update-status', { status: 'checking' });
+  });
+
+  autoUpdater.on('update-available', (info) => {
+    console.log('[Update] Update available:', info.version);
+    updateAvailable = true;
+    mainWindow?.webContents.send('update-status', { 
+      status: 'available', 
+      version: info.version,
+      releaseDate: info.releaseDate,
+      releaseNotes: info.releaseNotes 
+    });
+    dialog.showMessageBox({
+      type: 'info',
+      title: 'Update Available',
+      message: `Flo ${info.version} is available!`,
+      detail: `Release date: ${info.releaseDate}\n\nWould you like to download it now?`,
+      buttons: ['Download', 'Later'],
+      defaultId: 0,
+    }).then((result) => {
+      if (result.response === 0) {
+        autoUpdater.downloadUpdate();
+      }
+    });
+  });
+
+  autoUpdater.on('update-not-available', () => {
+    console.log('[Update] No updates available');
+    mainWindow?.webContents.send('update-status', { status: 'up-to-date' });
+  });
+
+  autoUpdater.on('download-progress', (progress) => {
+    console.log(`[Update] Download progress: ${progress.percent.toFixed(1)}%`);
+    mainWindow?.webContents.send('update-status', { 
+      status: 'downloading',
+      percent: progress.percent 
+    });
+  });
+
+  autoUpdater.on('update-downloaded', (info) => {
+    console.log('[Update] Download complete:', info.version);
+    updateDownloaded = true;
+    mainWindow?.webContents.send('update-status', { 
+      status: 'ready-to-install',
+      version: info.version
+    });
+    dialog.showMessageBox({
+      type: 'info',
+      title: 'Update Ready',
+      message: 'Update downloaded successfully!',
+      detail: `Version ${info.version} is ready to install.\n\nThe update will be installed when you quit the app.`,
+      buttons: ['Restart Now', 'Later'],
+      defaultId: 0,
+    }).then((result) => {
+      if (result.response === 0) {
+        isQuitting = true;
+        autoUpdater.quitAndInstall();
+      }
+    });
+  });
+
+  autoUpdater.on('error', (err) => {
+    // 404 means no release artifacts published yet — treat as "up to date", not an error.
+    const is404 = err.message?.includes('404') || err.message?.includes('Cannot find latest');
+    if (is404) {
+      log.debug('[Update] No release artifacts found (404) — skipping update');
+      mainWindow?.webContents.send('update-status', { status: 'up-to-date' });
+    } else {
+      log.error('[Update] Error:', err);
+      mainWindow?.webContents.send('update-status', { status: 'error', error: err.message });
+    }
+  });
+}
+
+function checkForUpdates(): void {
+  if (!isDev) {
+    autoUpdater.checkForUpdates().catch((err) => {
+      console.error('[Update] Check failed:', err);
+    });
+  } else {
+    log.debug('[Update] Skipping update check in dev mode');
+    mainWindow?.webContents.send('update-status', { status: 'dev-mode' });
+  }
+}
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
@@ -20,7 +125,7 @@ function createWindow(): void {
     height: 900,
     minWidth: 1024,
     minHeight: 768,
-    title: 'FloPos',
+    title: 'Flo',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -32,14 +137,38 @@ function createWindow(): void {
 
   mainWindow.once('ready-to-show', () => {
     mainWindow?.show();
-    if (isDev) {
-      mainWindow?.webContents.openDevTools();
-    }
+    // DevTools can be opened with F12 or the Developer menu.
+    // Auto-opening causes harmless but noisy Autofill CDP errors because
+    // Electron does not implement the Autofill domain of the Chrome DevTools Protocol.
   });
 
   // Always load from the embedded Express server (serves static Next.js export).
   // This avoids file:// protocol issues and keeps dev/prod behaviour identical.
   mainWindow.loadURL(`http://localhost:${PORT}`);
+
+  // Allow target="_blank" links to open new windows for local URLs (e.g. the KDS page).
+  // External URLs are sent to the system browser instead.
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    const isLocal = url.startsWith(`http://localhost:${PORT}`) ||
+                    url.startsWith(`http://127.0.0.1:${PORT}`) ||
+                    url.startsWith(`http://${getLocalIP()}:${PORT}`);
+    if (isLocal) {
+      return {
+        action: 'allow',
+        overrideBrowserWindowOptions: {
+          width: 1280,
+          height: 800,
+          title: 'Flo - Kitchen Display',
+          webPreferences: {
+            contextIsolation: true,
+            nodeIntegration: false,
+          },
+        },
+      };
+    }
+    shell.openExternal(url);
+    return { action: 'deny' };
+  });
 
   mainWindow.on('close', (event) => {
     if (!isQuitting) {
@@ -50,6 +179,38 @@ function createWindow(): void {
 
   mainWindow.on('closed', () => {
     mainWindow = null;
+  });
+
+  mainWindow.webContents.on('render-process-gone', (event, details) => {
+    log.error('[Window] Renderer process gone:', details.reason);
+    console.error('[Window] Renderer process gone:', details.reason);
+    
+    if (details.reason !== 'clean-exit') {
+      dialog.showMessageBox({
+        type: 'error',
+        title: 'App Crashed',
+        message: 'The app crashed and will restart.',
+        detail: `Reason: ${details.reason}`,
+        buttons: ['OK'],
+      }).then(() => {
+        mainWindow?.destroy();
+        mainWindow = null;
+        createWindow();
+      });
+    }
+  });
+
+  mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
+    log.error('[Window] Failed to load:', errorCode, errorDescription);
+    console.error('[Window] Failed to load:', errorCode, errorDescription);
+  });
+
+  mainWindow.webContents.on('unresponsive', () => {
+    console.warn('[Window] Window became unresponsive');
+  });
+
+  mainWindow.webContents.on('responsive', () => {
+    console.log('[Window] Window became responsive again');
   });
 }
 
@@ -63,12 +224,12 @@ function createTray(): void {
     tray = new Tray(icon.resize({ width: 16, height: 16 }));
 
     const contextMenu = Menu.buildFromTemplate([
-      { label: 'Open FloPos', click: () => mainWindow?.show() },
+      { label: 'Open Flo', click: () => mainWindow?.show() },
       { type: 'separator' },
       { label: 'Quit', click: () => { isQuitting = true; app.quit(); } },
     ]);
 
-    tray.setToolTip('FloPos');
+    tray.setToolTip('Flo');
     tray.setContextMenu(contextMenu);
     tray.on('double-click', () => mainWindow?.show());
   } catch {
@@ -80,14 +241,14 @@ function startMdns(): void {
   try {
     bonjour = new Bonjour();
     bonjour.publish({
-      name: 'FloPos',
+      name: 'Flo',
       type: 'http',
       port: PORT,
-      host: 'flopos',   // resolves as flopos.local on the LAN
+      host: 'flo',   // resolves as flo.local on the LAN
       txt: { version: app.getVersion(), kds: `/kds` },
     });
     const ip = getLocalIP();
-    console.log(`[mDNS] Advertising flopos.local:${PORT}  (IP fallback: http://${ip}:${PORT})`);
+    console.log(`[mDNS] Advertising flo.local:${PORT}  (IP fallback: http://${ip}:${PORT})`);
   } catch (err) {
     console.warn('[mDNS] Could not start Bonjour:', err);
   }
@@ -141,7 +302,8 @@ function createMenu(): void {
     {
       label: 'Help',
       submenu: [
-        { label: 'About FloPos', click: () => showAbout() },
+        { label: 'About Flo', click: () => showAbout() },
+        { label: 'Check for Updates', click: () => checkForUpdates() },
       ],
     },
   ];
@@ -164,8 +326,8 @@ function showAbout(): void {
   const ip = getLocalIP();
   dialog.showMessageBox({
     type: 'info',
-    title: 'About FloPos',
-    message: 'FloPos Desktop',
+    title: 'About Flo',
+    message: 'Flo Desktop',
     detail: [
       `Version: ${app.getVersion()}`,
       `Electron: ${process.versions.electron}`,
@@ -174,7 +336,7 @@ function showAbout(): void {
       'A self-hosted, offline-first Point of Sale system.',
       'Your data stays yours.',
       '',
-      `KDS URL: http://flopos.local:${PORT}/kds`,
+      `KDS URL: http://flo.local:${PORT}/kds`,
       `IP fallback: http://${ip}:${PORT}/kds`,
     ].join('\n'),
   });
@@ -182,32 +344,59 @@ function showAbout(): void {
 
 async function initialize(): Promise<void> {
   try {
-    console.log('[FloPos] Initializing...');
+    console.log('[Flo] Initializing...');
 
-    console.log('[FloPos] Initializing database...');
+    console.log('[Flo] Initializing database...');
     initDatabase();
 
-    console.log('[FloPos] Starting local server...');
+    console.log('[Flo] Starting local server...');
     await startServer();
 
-    console.log('[FloPos] Starting mDNS advertisement...');
+    console.log('[Flo] Starting mDNS advertisement...');
     startMdns();
 
-    console.log('[FloPos] Initializing printer...');
+    console.log('[Flo] Initializing printer...');
     await initPrinter();
 
-    console.log('[FloPos] Registering IPC handlers...');
+    console.log('[Flo] Registering IPC handlers...');
     registerIpcHandlers();
 
-    console.log('[FloPos] Creating window...');
+    ipcMain.handle('get-update-status', () => ({
+      updateAvailable,
+      updateDownloaded,
+      version: app.getVersion(),
+    }));
+
+    ipcMain.handle('check-for-updates', () => {
+      checkForUpdates();
+    });
+
+    ipcMain.handle('get-status', () => {
+      const mem = process.memoryUsage();
+      return {
+        server: isServerRunning() ? 'running' : 'stopped',
+        memory: {
+          heapUsed: Math.round(mem.heapUsed / 1024 / 1024),
+          heapTotal: Math.round(mem.heapTotal / 1024 / 1024),
+          rss: Math.round(mem.rss / 1024 / 1024),
+        },
+        uptime: process.uptime(),
+        port: PORT,
+      };
+    });
+
+    console.log('[Flo] Creating window...');
     createWindow();
     createTray();
     createMenu();
+    setupAutoUpdater();
 
-    console.log('[FloPos] Ready!');
+    setTimeout(() => checkForUpdates(), 5000);
+
+    console.log('[Flo] Ready!');
   } catch (error) {
-    console.error('[FloPos] Initialization error:', error);
-    dialog.showErrorBox('Initialization Error', `Failed to start FloPos: ${error}`);
+    console.error('[Flo] Initialization error:', error);
+    dialog.showErrorBox('Initialization Error', `Failed to start Flo: ${error}`);
     app.quit();
   }
 }
@@ -233,17 +422,19 @@ app.on('before-quit', () => {
 });
 
 app.on('quit', () => {
-  console.log('[FloPos] Shutting down...');
+  console.log('[Flo] Shutting down...');
   stopMdns();
   stopServer();
   closeDatabase();
-  console.log('[FloPos] Goodbye!');
+  console.log('[Flo] Goodbye!');
 });
 
 process.on('uncaughtException', (error) => {
-  console.error('[FloPos] Uncaught exception:', error);
+  log.error('[Flo] Uncaught exception:', error);
+  console.error('[Flo] Uncaught exception:', error);
 });
 
 process.on('unhandledRejection', (reason) => {
-  console.error('[FloPos] Unhandled rejection:', reason);
+  log.error('[Flo] Unhandled rejection:', reason);
+  console.error('[Flo] Unhandled rejection:', reason);
 });

@@ -26,9 +26,11 @@ router.get('/', (req: Request, res: Response) => {
       params.push(req.query.kitchen_station_id);
     }
 
-    query += ' ORDER BY sort_order, name';
+    query += ' ORDER BY number';
 
-    const tables = db.prepare(query).all(...params);
+    const rows = db.prepare(query).all(...params);
+    // Normalize: frontend expects `name`, schema column is `number`
+    const tables = rows.map((t: any) => ({ ...t, name: t.number }));
     res.json({ tables });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -48,7 +50,8 @@ router.get('/:id', (req: Request, res: Response) => {
       ORDER BY created_at DESC LIMIT 1
     `).get(req.params.id);
 
-    res.json({ table: { ...table, activeOrder } });
+    // Normalize: frontend expects `name`, schema column is `number`
+    res.json({ table: { ...(table as any), name: (table as any).number, activeOrder } });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -56,18 +59,20 @@ router.get('/:id', (req: Request, res: Response) => {
 
 router.post('/', (req: Request, res: Response) => {
   try {
-    const { name, capacity, floor, section, position_x, position_y, kitchen_station_id } = req.body;
+    // Accept `number` (schema column) or `name` (legacy frontend field)
+    const { number, name, capacity, floor, section, position_x, position_y, kitchen_station_id } = req.body;
+    const tableNumber = number || name;
 
-    if (!name) {
-      return res.status(400).json({ error: 'Name is required' });
+    if (!tableNumber) {
+      return res.status(400).json({ error: 'Table number is required' });
     }
 
     const db = getDatabase();
     const result = db.prepare(`
-      INSERT INTO tables (name, capacity, floor, section, position_x, position_y, kitchen_station_id, created_at, updated_at)
+      INSERT INTO tables (number, capacity, floor, section, position_x, position_y, kitchen_station_id, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
-      name, capacity || 4, floor || null, section || null,
+      tableNumber, capacity || 4, floor || null, section || null,
       position_x || null, position_y || null, kitchen_station_id || null, now(), now()
     );
 

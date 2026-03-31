@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { getDatabase, now } from '../db';
 import * as crypto from 'crypto';
+import { randomUUID } from 'crypto';
 
 const router = Router();
 
@@ -10,7 +11,7 @@ router.get('/orders', (req: Request, res: Response) => {
     const stationId = req.query.station_id as string;
 
     let query = `
-      SELECT o.*, t.name as table_name, t.floor, t.section
+      SELECT o.*, t.number as table_name, t.floor, t.section
       FROM orders o
       LEFT JOIN tables t ON o.table_id = t.id
       WHERE o.status NOT IN ('completed', 'cancelled')
@@ -71,11 +72,12 @@ router.post('/pairing', (req: Request, res: Response) => {
 
     const token = crypto.randomBytes(32).toString('hex');
     const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+    const tokenId = randomUUID();
 
     const result = db.prepare(`
-      INSERT INTO kds_pairing_tokens (token, station_id, expires_at, created_at)
-      VALUES (?, ?, ?, ?)
-    `).run(token, station_id || null, expiresAt, now());
+      INSERT INTO kds_pairing_tokens (id, token, station_id, expires_at, created_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(tokenId, token, station_id || null, expiresAt, now());
 
     const pairingUrl = `flo://kds/pair?token=${token}`;
     const webUrl = `/kds/pair?token=${token}`;
@@ -121,7 +123,7 @@ router.get('/display', (req: Request, res: Response) => {
 
     let itemsQuery = `
       SELECT oi.*, o.id as order_id, o.order_number, o.type, o.status as order_status,
-        o.table_id, t.name as table_name, o.special_instructions as order_notes,
+        o.table_id, t.number as table_name, o.special_instructions as order_notes,
         o.created_at as order_time
       FROM order_items oi
       JOIN orders o ON oi.order_id = o.id
@@ -189,12 +191,11 @@ router.patch('/items/:id/status', (req: Request, res: Response) => {
     }
 
     const nowStr = now();
-    const preparedAt = ['preparing', 'ready', 'served'].includes(status) ? nowStr : null;
 
     db.prepare(`
-      UPDATE order_items SET status = ?, prepared_at = COALESCE(?, prepared_at), updated_at = ?
+      UPDATE order_items SET status = ?, updated_at = ?
       WHERE id = ?
-    `).run(status, preparedAt, nowStr, req.params.id);
+    `).run(status, nowStr, req.params.id);
 
     const updatedItem = db.prepare('SELECT * FROM order_items WHERE id = ?').get(req.params.id);
     res.json({ item: updatedItem });

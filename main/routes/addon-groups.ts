@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { getDatabase, now } from '../db';
+import { randomUUID } from 'crypto';
 
 const router = Router();
 
@@ -43,20 +44,19 @@ router.post('/', (req: Request, res: Response) => {
     }
 
     const db = getDatabase();
-    const result = db.prepare(`
-      INSERT INTO addon_groups (name, description, is_required, min_selection, max_selection, sort_order, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    const groupId = randomUUID();
+    db.prepare(`
+      INSERT INTO addon_groups (id, name, description, is_required, min_selection, max_selection, sort_order, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
-      name, description || null, is_required ? 1 : 0, min_selection || 0, max_selection || 1, sort_order || 0, now(), now()
+      groupId, name, description || null, is_required ? 1 : 0, min_selection || 0, max_selection || 1, sort_order || 0, now(), now()
     );
-
-    const groupId = result.lastInsertRowid;
 
     // Insert addons if provided
     if (addons && addons.length > 0) {
-      const insertAddon = db.prepare('INSERT INTO addons (addon_group_id, name, price, sort_order) VALUES (?, ?, ?, ?)');
+      const insertAddon = db.prepare('INSERT INTO addons (id, addon_group_id, name, price, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)');
       addons.forEach((addon: any, index: number) => {
-        insertAddon.run(groupId, addon.name, addon.price || 0, index);
+        insertAddon.run(randomUUID(), groupId, addon.name, addon.price || 0, index, now(), now());
       });
     }
 
@@ -129,8 +129,8 @@ router.post('/:groupId/addons', (req: Request, res: Response) => {
       return res.status(404).json({ error: 'Addon group not found' });
     }
 
-    const result = db.prepare('INSERT INTO addons (addon_group_id, name, price, is_active, sort_order) VALUES (?, ?, ?, ?, ?)')
-      .run(req.params.groupId, name, price, is_active !== false ? 1 : 0, sort_order || 0);
+    const result = db.prepare('INSERT INTO addons (id, addon_group_id, name, price, is_active, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(randomUUID(), req.params.groupId, name, price, is_active !== false ? 1 : 0, sort_order || 0, now(), now());
 
     const addon = db.prepare('SELECT * FROM addons WHERE id = ?').get(result.lastInsertRowid);
     res.status(201).json({ addon });

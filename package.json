@@ -1,28 +1,30 @@
 {
-  "name": "flopos-desktop",
-  "version": "1.0.0",
-  "description": "FloPos - Self-hosted Point of Sale System",
+  "name": "flo-desktop",
+  "version": "1.1.0",
+  "description": "Flo - Self-hosted Point of Sale System",
   "main": "dist/index.js",
   "scripts": {
     "dev": "npm run build && electron .",
     "dev:frontend": "cd frontend && npm run dev",
     "build": "tsc",
-    "build:frontend": "cd frontend && npm ci && NEXT_PUBLIC_API_URL=http://localhost:3001/api npm run build",
+    "build:frontend": "cd frontend && npm ci && NEXT_BUILD_MODE=desktop NEXT_PUBLIC_API_URL=http://localhost:3001/api npm run build",
     "build:all-platforms": "npm run build:frontend && npm run build && electron-builder --win --mac --linux",
     "build:win": "npm run build:frontend && npm run build && electron-builder --win",
     "build:mac": "npm run build:frontend && npm run build && electron-builder --mac",
     "build:linux": "npm run build:frontend && npm run build && electron-builder --linux",
     "pack": "electron-builder --dir",
     "start": "electron .",
-    "postinstall": "git submodule update --init --recursive"
+    "postinstall": "git submodule update --init --recursive",
+    "rebuild": "HOME=~/.electron-gyp node-gyp rebuild --target=$(node -p \"require('./node_modules/electron/package.json').version\") --arch=$(node -p \"process.arch\") --dist-url=https://electronjs.org/headers --runtime=electron --directory node_modules/better-sqlite3"
   },
   "author": {
-    "name": "FloPos",
-    "email": "support@flopos.com"
+    "name": "Flo",
+    "email": "support@flo.local"
   },
-  "homepage": "https://flopos.com",
+  "homepage": "https://flo.local",
   "license": "MIT",
   "devDependencies": {
+    "@electron/rebuild": "^4.0.3",
     "@types/bcryptjs": "^2.4.6",
     "@types/better-sqlite3": "^7.6.11",
     "@types/bonjour": "^3.5.13",
@@ -30,6 +32,7 @@
     "@types/express": "^4.17.21",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^20.14.0",
+    "@types/qrcode": "^1.5.6",
     "@types/uuid": "^9.0.8",
     "@types/ws": "^8.5.10",
     "electron": "^31.1.0",
@@ -38,10 +41,11 @@
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
-    "better-sqlite3": "^11.1.2",
-    "better-sqlite3-multiple-ciphers": "^11.1.2",
+    "better-sqlite3": "^11.10.0",
     "bonjour-service": "^1.2.1",
     "cors": "^2.8.5",
+    "electron-log": "^5.4.3",
+    "electron-updater": "^6.8.3",
     "express": "^4.19.2",
     "jsonwebtoken": "^9.0.2",
     "node-thermal-printer": "^4.2.1",
@@ -51,17 +55,22 @@
     "ws": "^8.17.0"
   },
   "build": {
-    "appId": "com.flopos.desktop",
-    "productName": "FloPos",
+    "appId": "com.flo.desktop",
+    "productName": "Flo",
     "asar": true,
+    "asarUnpack": "**/node_modules/better-sqlite3/**/*",
     "directories": {
       "output": "release"
     },
     "files": [
       "dist/**/*",
-      "node_modules/**/*",
-      "!node_modules/**/build/**/*"
+      "node_modules/**/*"
     ],
+    "publish": {
+      "provider": "github",
+      "owner": "FreeOpenSourcePOS",
+      "repo": "FloDesktop"
+    },
     "extraResources": [
       {
         "from": "assets",
@@ -76,7 +85,9 @@
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "icon": "assets/icon.ico"
@@ -85,7 +96,10 @@
       "target": [
         {
           "target": "dmg",
-          "arch": ["x64", "arm64"]
+          "arch": [
+            "x64",
+            "arm64"
+          ]
         }
       ],
       "icon": "assets/icon.icns",
@@ -95,11 +109,15 @@
       "target": [
         {
           "target": "AppImage",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         },
         {
           "target": "deb",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "icon": "assets",

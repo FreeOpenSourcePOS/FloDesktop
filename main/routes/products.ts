@@ -43,7 +43,7 @@ router.get('/', (req: Request, res: Response) => {
         return { ...group, addons };
       });
 
-      return { ...product, category, addonGroups: addonGroupsWithAddons };
+      return { ...product, category, addon_groups: addonGroupsWithAddons };
     });
 
     res.json({ products: productsWithRelations });

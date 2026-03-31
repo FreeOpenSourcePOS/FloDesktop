@@ -1,0 +1,763 @@
+# Flo API Documentation
+
+## Base URL
+
+**FloDesktop (Local):** `http://flo.local:3001` or `http://<local-ip>:3001`
+
+**FloCloud (Cloud):** `https://api.flopos.com` *(placeholder)*
+
+---
+
+## Authentication
+
+### POST `/api/auth/login`
+Authenticate user and receive JWT token.
+
+**Request:**
+```json
+{
+  "email": "chef1@flo.local",
+  "password": "chef123"
+}
+```
+
+**Response (200):**
+```json
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIs...",
+  "token_type": "Bearer",
+  "expires_in": 86400,
+  "user": {
+    "id": "chef-1",
+    "name": "Chef One",
+    "email": "chef1@flo.local",
+    "role": "chef",
+    "category_ids": ["cat-1", "cat-2"]
+  }
+}
+```
+
+**Error (401):**
+```json
+{
+  "error": "Invalid credentials"
+}
+```
+
+---
+
+### POST `/api/auth/register`
+Register new user (owner/admin only).
+
+**Request:**
+```json
+{
+  "name": "John Doe",
+  "email": "john@flo.local",
+  "password": "securepassword",
+  "role": "cashier"
+}
+```
+
+**Response (201):**
+```json
+{
+  "message": "User created",
+  "user_id": "user-xxx"
+}
+```
+
+---
+
+## User Management
+
+### GET `/api/users`
+List all users (owner/manager only).
+
+**Headers:** `Authorization: Bearer <token>`
+
+**Response (200):**
+```json
+{
+  "users": [
+    {
+      "id": "user-1",
+      "name": "Owner",
+      "email": "admin@flo.local",
+      "role": "owner",
+      "is_active": 1
+    }
+  ]
+}
+```
+
+---
+
+### POST `/api/users`
+Create new user.
+
+**Headers:** `Authorization: Bearer <token>`
+
+**Request:**
+```json
+{
+  "name": "Chef One",
+  "email": "chef1@flo.local",
+  "password": "chef123",
+  "role": "chef",
+  "category_ids": ["cat-1", "cat-2"]
+}
+```
+
+**Response (201):**
+```json
+{
+  "success": true,
+  "id": "chef-1"
+}
+```
+
+---
+
+### PATCH `/api/users/:id`
+Update user details.
+
+**Headers:** `Authorization: Bearer <token>`
+
+**Request:**
+```json
+{
+  "name": "Updated Name",
+  "role": "manager",
+  "category_ids": ["cat-1", "cat-2", "cat-3"]
+}
+```
+
+---
+
+### DELETE `/api/users/:id`
+Delete user.
+
+**Headers:** `Authorization: Bearer <token>`
+
+---
+
+## Categories
+
+### GET `/api/categories`
+List all categories.
+
+**Headers:** `Authorization: Bearer <token>`
+
+**Response (200):**
+```json
+{
+  "categories": [
+    { "id": "cat-1", "name": "Food", "is_active": 1 },
+    { "id": "cat-2", "name": "Beverages", "is_active": 1 },
+    { "id": "cat-3", "name": "Desserts", "is_active": 1 }
+  ]
+}
+```
+
+---
+
+### POST `/api/categories`
+Create category.
+
+**Headers:** `Authorization: Bearer <token>`
+
+**Request:**
+```json
+{
+  "name": "Appetizers"
+}
+```
+
+---
+
+### PATCH `/api/categories/:id`
+Update category.
+
+---
+
+### DELETE `/api/categories/:id`
+Delete category.
+
+---
+
+## Products
+
+### GET `/api/products`
+List all products.
+
+**Headers:** `Authorization: Bearer <token>`
+
+**Query params:** `?category_id=cat-1&is_active=1`
+
+**Response (200):**
+```json
+{
+  "products": [
+    {
+      "id": "prod-1",
+      "name": "Cheeseburger",
+      "price": 250.0,
+      "category_id": "cat-1",
+      "is_active": 1,
+      "has_addons": true
+    }
+  ]
+}
+```
+
+---
+
+### POST `/api/products`
+Create product.
+
+**Headers:** `Authorization: Bearer <token>`
+
+**Request:**
+```json
+{
+  "name": "Veggie Wrap",
+  "price": 180.0,
+  "category_id": "cat-1",
+  "has_addons": false
+}
+```
+
+---
+
+### PATCH `/api/products/:id`
+Update product.
+
+---
+
+### DELETE `/api/products/:id`
+Delete (deactivate) product.
+
+---
+
+## Addon Groups
+
+### GET `/api/addon-groups`
+List addon groups.
+
+**Headers:** `Authorization: Bearer <token>`
+
+---
+
+### POST `/api/addon-groups`
+Create addon group.
+
+**Request:**
+```json
+{
+  "name": "Sauce Options",
+  "addons": [
+    { "name": "Extra Cheese", "price": 20 },
+    { "name": "No Onions", "price": 0 }
+  ]
+}
+```
+
+---
+
+## Tables
+
+### GET `/api/tables`
+List all tables.
+
+**Headers:** `Authorization: Bearer <token>`
+
+**Response (200):**
+```json
+{
+  "tables": [
+    { "id": "table-1", "name": "T1", "capacity": 4, "is_active": 1 }
+  ]
+}
+```
+
+---
+
+### POST `/api/tables`
+Create table.
+
+---
+
+### PATCH `/api/tables/:id`
+Update table.
+
+---
+
+### DELETE `/api/tables/:id`
+Delete table.
+
+---
+
+## Orders
+
+### GET `/api/orders`
+List orders.
+
+**Headers:** `Authorization: Bearer <token>`
+
+**Query params:**
+- `?status=pending,preparing` - Filter by status
+- `?date=2025-03-31` - Filter by date
+
+**Response (200):**
+```json
+{
+  "orders": [
+    {
+      "id": 1,
+      "order_number": "ORD-001",
+      "type": "dine_in",
+      "status": "pending",
+      "table": { "id": "table-1", "name": "T1" },
+      "items": [
+        {
+          "id": 1,
+          "product_name": "Cheeseburger",
+          "quantity": 2,
+          "status": "pending",
+          "addons": [{ "name": "Extra Cheese", "price": 20 }],
+          "special_instructions": "No onions"
+        }
+      ],
+      "created_at": "2025-03-31T12:00:00Z"
+    }
+  ]
+}
+```
+
+---
+
+### POST `/api/orders`
+Create new order.
+
+**Headers:** `Authorization: Bearer <token>`
+
+**Request:**
+```json
+{
+  "type": "dine_in",
+  "table_id": "table-1",
+  "customer_id": "cust-1",
+  "items": [
+    {
+      "product_id": "prod-1",
+      "quantity": 2,
+      "addons": [{ "addon_id": "addon-1", "price": 20 }],
+      "special_instructions": "No onions"
+    }
+  ]
+}
+```
+
+**Response (201):**
+```json
+{
+  "order": { ... },
+  "bill": { ... }
+}
+```
+
+---
+
+### GET `/api/orders/:id`
+Get order details.
+
+---
+
+### PATCH `/api/orders/:id`
+Update order status.
+
+**Request:**
+```json
+{
+  "status": "preparing"
+}
+```
+
+---
+
+## Order Items
+
+### PATCH `/api/order-items/:id/status`
+Update item status (KDS workflow).
+
+**Headers:** `Authorization: Bearer <token>`
+
+**Request:**
+```json
+{
+  "status": "preparing"
+}
+```
+
+**Valid statuses:** `pending` → `preparing` → `ready` → `served`
+
+---
+
+## Bills
+
+### GET `/api/bills`
+List bills.
+
+**Headers:** `Authorization: Bearer <token>`
+
+**Query params:** `?date=2025-03-31&payment_status=paid`
+
+---
+
+### POST `/api/bills`
+Create bill (after order completion).
+
+**Headers:** `Authorization: Bearer <token>`
+
+**Request:**
+```json
+{
+  "order_id": 1,
+  "payment_method": "cash",
+  "amount_tendered": 500
+}
+```
+
+---
+
+### PATCH `/api/bills/:id/pay`
+Mark bill as paid.
+
+**Request:**
+```json
+{
+  "payment_method": "cash",
+  "amount_tendered": 500
+}
+```
+
+---
+
+## Kitchen Display (KDS)
+
+### WebSocket `/kds`
+Real-time KDS connection.
+
+**Step 1:** Connect to WebSocket
+```
+ws://flo.local:3001/kds
+```
+
+**Step 2:** Authenticate
+```json
+{
+  "type": "auth",
+  "token": "eyJhbGciOiJIUzI1NiIs..."
+}
+```
+
+**Step 3:** Receive initial data
+```json
+{
+  "type": "auth_success",
+  "user": {
+    "id": "chef-1",
+    "name": "Chef One",
+    "role": "chef",
+    "categoryIds": ["cat-1", "cat-2"]
+  },
+  "orders": [...],
+  "counts": {
+    "pending": 5,
+    "preparing": 3,
+    "ready": 1,
+    "served": 10
+  }
+}
+```
+
+**Step 4:** Receive real-time updates
+```json
+{
+  "type": "new_order",
+  "order": { ... }
+}
+```
+
+```json
+{
+  "type": "order_updated",
+  "order": { ... }
+}
+```
+
+**Update item status (send):**
+```json
+{
+  "type": "status_update",
+  "order_item_id": 1,
+  "status": "preparing"
+}
+```
+
+**Error response:**
+```json
+{
+  "type": "auth_error",
+  "message": "Invalid token"
+}
+```
+
+---
+
+### REST (Fallback) `GET /api/kitchen/orders`
+Fetch kitchen orders (REST fallback for cloud/web).
+
+**Headers:** `Authorization: Bearer <token>`
+
+**Query params:** `?status=pending,preparing,ready,served`
+
+**Response (200):**
+```json
+{
+  "orders": [...],
+  "counts": {
+    "pending": 5,
+    "preparing": 3,
+    "ready": 1,
+    "served": 10
+  }
+}
+```
+
+---
+
+## Customers
+
+### GET `/api/customers`
+List customers.
+
+**Headers:** `Authorization: Bearer <token>`
+
+**Query params:** `?search=John&phone=9876543210`
+
+---
+
+### POST `/api/customers`
+Create customer.
+
+**Request:**
+```json
+{
+  "name": "John Doe",
+  "phone": "+919876543210",
+  "email": "john@email.com"
+}
+```
+
+---
+
+### GET `/api/customers/:id/loyalty`
+Get loyalty points.
+
+**Response:**
+```json
+{
+  "points": 150,
+  "last_activity": "2025-03-30"
+}
+```
+
+---
+
+### POST `/api/customers/:id/loyalty/earn`
+Earn loyalty points.
+
+**Request:**
+```json
+{
+  "points": 10,
+  "description": "Order #123"
+}
+```
+
+---
+
+## Reports
+
+### GET `/api/reports/sales`
+Daily/monthly sales report.
+
+**Headers:** `Authorization: Bearer <token>`
+
+**Query params:** `?date=2025-03-31`
+
+**Response:**
+```json
+{
+  "date": "2025-03-31",
+  "total_revenue": 15000,
+  "order_count": 45,
+  "avg_order_value": 333.33
+}
+```
+
+---
+
+### GET `/api/reports/x-report`
+X Report (current shift).
+
+---
+
+### GET `/api/reports/z-report`
+Z Report (close shift).
+
+---
+
+## Settings
+
+### GET `/api/settings/business`
+Get business settings.
+
+**Response:**
+```json
+{
+  "business_name": "My Restaurant",
+  "timezone": "Asia/Kolkata",
+  "currency": "INR",
+  "gstin": "22AAAAA0000A1Z5"
+}
+```
+
+---
+
+### PUT `/api/settings/business`
+Update business settings.
+
+---
+
+### GET `/api/settings/tax`
+Get tax settings.
+
+---
+
+## Printers
+
+### GET `/api/printers`
+List configured printers.
+
+---
+
+### POST `/api/printers`
+Add printer.
+
+**Request:**
+```json
+{
+  "name": "Kitchen Printer",
+  "connection_type": "network",
+  "ip_address": "192.168.1.100",
+  "port": 9100,
+  "paper_width": "80mm"
+}
+```
+
+---
+
+### POST `/api/printers/:id/test`
+Send test print.
+
+---
+
+## Mobile Pairing
+
+### GET `/api/mobile/pairing-code`
+Get current pairing code.
+
+**Response:**
+```json
+{
+  "pairing_code": "123456",
+  "rotated_at": "2025-03-31T10:00:00Z"
+}
+```
+
+---
+
+### POST `/api/mobile/rotate-code`
+Generate new pairing code.
+
+---
+
+## KDS Info
+
+### GET `/api/kds-info`
+Get KDS access URLs and QR code.
+
+**Response:**
+```json
+{
+  "mdns_url": "http://flo.local:3001/kds",
+  "ip_url": "http://192.168.1.50:3001/kds",
+  "qr_url": "http://192.168.1.50:3001/kds",
+  "qr_data_url": "data:image/png;base64,..."
+}
+```
+
+---
+
+## WebSocket Events Summary
+
+| Event | Direction | Description |
+|-------|-----------|-------------|
+| `auth` | → Server | Authenticate with JWT token |
+| `auth_success` | ← Server | Authentication successful |
+| `auth_error` | ← Server | Authentication failed |
+| `initial_data` | ← Server | Initial orders and counts |
+| `new_order` | ← Server | New order created |
+| `order_updated` | ← Server | Order status changed |
+| `status_update` | → Server | Update item status |
+| `orders` | ← Server | Full orders list (periodic) |
+
+---
+
+## Order Status Flow
+
+```
+pending → preparing → ready → served
+```
+
+Each item in an order has its own status, allowing:
+- Multiple items in one order
+- Different items at different stages
+- KDS shows items filtered by status
+
+---
+
+## Role-Based Access
+
+| Role | Access |
+|------|--------|
+| `owner` | Full access, user management, settings |
+| `manager` | Most features, limited settings |
+| `cashier` | POS, orders, bills |
+| `waiter` | Orders, tables |
+| `chef` | KDS only |
+
+---
+
+## Category Filtering (KDS)
+
+Users with `chef` role have `category_ids` array. When accessing KDS:
+1. Server validates JWT token
+2. Server checks role is `chef`, `manager`, or `owner`
+3. Server filters order items to only show products in user's categories
+4. One user can have multiple categories
+
+Example: Chef1 (cat-1, cat-2) only sees Food and Beverages items.

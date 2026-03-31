@@ -106,8 +106,8 @@
         document.getElementById('status').textContent = 'Connected';
         document.getElementById('status').className = 'status connected';
         
-        // Auto-pair with first available station or station 1
-        ws.send(JSON.stringify({ type: 'pair', stationId: 'station-1' }));
+        // Auto-authenticate for all stations (station_id = null means all orders)
+        ws.send(JSON.stringify({ type: 'auth', station_id: null, station_name: 'Kitchen Display' }));
       };
       
       ws.onclose = () => {
@@ -122,7 +122,7 @@
       
       ws.onmessage = (event) => {
         const data = JSON.parse(event.data);
-        if (data.type === 'orders') {
+        if (data.type === 'initial_data' || data.type === 'orders') {
           renderOrders(data.orders);
         }
       };
@@ -139,13 +139,13 @@
       container.innerHTML = orders.map(order => `
         <div class="order ${order.status}">
           <div class="order-header">
-            <span class="order-number">#${order.orderNumber}</span>
-            <span class="order-time">${formatTime(order.createdAt)}</span>
+            <span class="order-number">#${order.order_number}</span>
+            <span class="order-time">${formatTime(order.created_at)}</span>
           </div>
           <div class="order-items">
             ${order.items.map(item => `
               <div class="item">
-                <span><span class="qty">${item.quantity}x</span> ${item.productName}</span>
+                <span><span class="qty">${item.quantity}x</span> ${item.product_name}</span>
                 ${item.notes ? `<span style="color:#ffc107;font-size:0.85rem">• ${item.notes}</span>` : ''}
               </div>
             `).join('')}
@@ -164,9 +164,9 @@
       return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
     }
 
-    function updateStatus(orderId, status) {
+    function updateStatus(orderItemId, status) {
       if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'updateStatus', orderId, status, stationId }));
+        ws.send(JSON.stringify({ type: 'status_update', order_item_id: orderItemId, status }));
       }
     }
 

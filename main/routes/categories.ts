@@ -9,7 +9,7 @@ router.get('/', (req: Request, res: Response) => {
     let query = 'SELECT * FROM categories WHERE deleted_at IS NULL';
     const params: any[] = [];
 
-    if (req.query.active === 'true') {
+    if (req.query.active === 'true' || req.query.active === '1') {
       query += ' AND is_active = 1';
     }
     if (req.query.root === 'true') {

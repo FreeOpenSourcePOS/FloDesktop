@@ -33,7 +33,7 @@ router.get('/', (req: Request, res: Response) => {
       params.push(`%${req.query.name}%`);
     }
 
-    query += ' ORDER BY last_visit_at DESC, name';
+    query += ' ORDER BY name';
 
     if (req.query.per_page) {
       query += ` LIMIT ${parseInt(req.query.per_page as string)}`;
