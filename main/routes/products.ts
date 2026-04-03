@@ -81,10 +81,9 @@ router.get('/:id', (req: Request, res: Response) => {
 router.post('/', (req: Request, res: Response) => {
   try {
     const {
-      category_id, name, sku, description, price, cost_price, cb_percent,
-      tax_type, tax_rate, hsn_code, track_inventory, stock_quantity,
-      low_stock_threshold, is_active, available_online, image_url,
-      tags, variants, modifiers, sort_order, addon_group_ids
+      category_id, name, sku, description, price, cost_price,
+      tax_type, tax_rate, track_inventory, stock_quantity,
+      low_stock_threshold, is_active, image_url, sort_order, addon_group_ids
     } = req.body;
 
     if (!name || price === undefined) {
@@ -94,20 +93,18 @@ router.post('/', (req: Request, res: Response) => {
     const db = getDatabase();
     const id = uuidv4();
     const result = db.prepare(`
-      INSERT INTO products (id, category_id, name, sku, description, price, cost, cb_percent,
-        tax_type, tax_rate, hsn_code, track_inventory, stock_quantity, low_stock_threshold,
-        is_active, available_online, image_url, tags, variants, modifiers, sort_order, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO products (id, category_id, name, sku, description, price, cost,
+        tax_type, tax_rate, track_inventory, stock_quantity, low_stock_threshold,
+        is_active, image_url, sort_order, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
-      id, category_id || null, name, sku || null, description || null, price, cost_price || 0, cb_percent || 0,
-      tax_type || 'none', tax_rate || 0, hsn_code || null,
+      id, category_id || null, name, sku || null, description || null, price, cost_price || 0,
+      tax_type || 'none', tax_rate || 0,
       track_inventory ? 1 : 0, stock_quantity || 0, low_stock_threshold || 0,
-      is_active !== false ? 1 : 0, available_online ? 1 : 0, image_url || null,
-      JSON.stringify(tags || []), JSON.stringify(variants || {}), JSON.stringify(modifiers || {}),
+      is_active !== false ? 1 : 0, image_url || null,
       sort_order || 0, now(), now()
     );
 
-    // Link addon groups
     if (addon_group_ids && addon_group_ids.length > 0) {
       const insertAgp = db.prepare('INSERT INTO addon_group_product (addon_group_id, product_id) VALUES (?, ?)');
       for (const agId of addon_group_ids) {
@@ -131,34 +128,29 @@ router.put('/:id', (req: Request, res: Response) => {
     }
 
     const {
-      category_id, name, sku, description, price, cost_price, cb_percent,
-      tax_type, tax_rate, hsn_code, track_inventory, stock_quantity,
-      low_stock_threshold, is_active, available_online, image_url,
-      tags, variants, modifiers, sort_order, addon_group_ids
+      category_id, name, sku, description, price, cost_price,
+      tax_type, tax_rate, track_inventory, stock_quantity,
+      low_stock_threshold, is_active, image_url, sort_order, addon_group_ids
     } = req.body;
 
     db.prepare(`
       UPDATE products SET category_id = COALESCE(?, category_id), name = COALESCE(?, name),
         sku = COALESCE(?, sku), description = COALESCE(?, description), price = COALESCE(?, price),
-        cost = COALESCE(?, cost), cb_percent = COALESCE(?, cb_percent),
+        cost = COALESCE(?, cost),
         tax_type = COALESCE(?, tax_type), tax_rate = COALESCE(?, tax_rate),
-        hsn_code = COALESCE(?, hsn_code), track_inventory = COALESCE(?, track_inventory),
+        track_inventory = COALESCE(?, track_inventory),
         stock_quantity = COALESCE(?, stock_quantity), low_stock_threshold = COALESCE(?, low_stock_threshold),
-        is_active = COALESCE(?, is_active), available_online = COALESCE(?, available_online),
-        image_url = COALESCE(?, image_url), tags = COALESCE(?, tags),
-        variants = COALESCE(?, variants), modifiers = COALESCE(?, modifiers),
+        is_active = COALESCE(?, is_active),
+        image_url = COALESCE(?, image_url),
         sort_order = COALESCE(?, sort_order), updated_at = ?
       WHERE id = ?
     `).run(
-      category_id, name, sku, description, price, cost_price, cb_percent,
-      tax_type, tax_rate, hsn_code,
+      category_id, name, sku, description, price, cost_price,
+      tax_type, tax_rate,
       track_inventory ? 1 : track_inventory === 0 ? 0 : null,
       stock_quantity, low_stock_threshold,
       is_active !== undefined ? (is_active ? 1 : 0) : null,
-      available_online !== undefined ? (available_online ? 1 : 0) : null,
-      image_url, tags ? JSON.stringify(tags) : null,
-      variants ? JSON.stringify(variants) : null,
-      modifiers ? JSON.stringify(modifiers) : null,
+      image_url,
       sort_order, now(), req.params.id
     );
 

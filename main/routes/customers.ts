@@ -115,9 +115,7 @@ router.get('/:id/wallet', (req: Request, res: Response) => {
 router.post('/', (req: Request, res: Response) => {
   try {
     const {
-      phone, country_code, name, email, address, city, state, postal_code,
-      date_of_birth, anniversary, preferences, notes, gstin, customer_state_code,
-      dietary_preferences, favourite_dishes
+      phone, name, email, address, notes
     } = req.body;
 
     if (!name) {
@@ -134,15 +132,10 @@ router.post('/', (req: Request, res: Response) => {
     }
 
     const result = db.prepare(`
-      INSERT INTO customers (phone, country_code, name, email, address, city, state, postal_code,
-        date_of_birth, anniversary, preferences, notes, gstin, customer_state_code,
-        dietary_preferences, favourite_dishes, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO customers (phone, name, email, address, notes, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
     `).run(
-      phone || null, country_code || '+91', name, email || null, address || null,
-      city || null, state || null, postal_code || null, date_of_birth || null,
-      anniversary || null, preferences || null, notes || null, gstin || null,
-      customer_state_code || null, dietary_preferences || null, favourite_dishes || null,
+      phone || null, name, email || null, address || null, notes || null,
       now(), now()
     );
 
@@ -156,9 +149,7 @@ router.post('/', (req: Request, res: Response) => {
 router.put('/:id', (req: Request, res: Response) => {
   try {
     const {
-      phone, name, email, address, city, state, postal_code,
-      date_of_birth, anniversary, preferences, notes, gstin, customer_state_code,
-      dietary_preferences, favourite_dishes
+      phone, name, email, address, notes
     } = req.body;
     const db = getDatabase();
 
@@ -173,23 +164,11 @@ router.put('/:id', (req: Request, res: Response) => {
         name = COALESCE(?, name),
         email = COALESCE(?, email),
         address = COALESCE(?, address),
-        city = COALESCE(?, city),
-        state = COALESCE(?, state),
-        postal_code = COALESCE(?, postal_code),
-        date_of_birth = COALESCE(?, date_of_birth),
-        anniversary = COALESCE(?, anniversary),
-        preferences = COALESCE(?, preferences),
         notes = COALESCE(?, notes),
-        gstin = COALESCE(?, gstin),
-        customer_state_code = COALESCE(?, customer_state_code),
-        dietary_preferences = COALESCE(?, dietary_preferences),
-        favourite_dishes = COALESCE(?, favourite_dishes),
         updated_at = ?
       WHERE id = ?
     `).run(
-      phone, name, email, address, city, state, postal_code,
-      date_of_birth, anniversary, preferences, notes, gstin, customer_state_code,
-      dietary_preferences, favourite_dishes, now(), req.params.id
+      phone, name, email, address, notes, now(), req.params.id
     );
 
     const updated = db.prepare('SELECT * FROM customers WHERE id = ?').get(req.params.id);

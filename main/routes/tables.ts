@@ -85,7 +85,8 @@ router.post('/', (req: Request, res: Response) => {
 
 router.put('/:id', (req: Request, res: Response) => {
   try {
-    const { name, capacity, floor, section, position_x, position_y, kitchen_station_id, is_active } = req.body;
+    const { number, name, capacity, floor, section, position_x, position_y, kitchen_station_id } = req.body;
+    const tableNumber = number || name;
     const db = getDatabase();
 
     const table = db.prepare('SELECT * FROM tables WHERE id = ?').get(req.params.id);
@@ -95,17 +96,16 @@ router.put('/:id', (req: Request, res: Response) => {
 
     db.prepare(`
       UPDATE tables SET
-        name = COALESCE(?, name),
+        number = COALESCE(?, number),
         capacity = COALESCE(?, capacity),
         floor = COALESCE(?, floor),
         section = COALESCE(?, section),
         position_x = COALESCE(?, position_x),
         position_y = COALESCE(?, position_y),
         kitchen_station_id = COALESCE(?, kitchen_station_id),
-        is_active = COALESCE(?, is_active),
         updated_at = ?
       WHERE id = ?
-    `).run(name, capacity, floor, section, position_x, position_y, kitchen_station_id, is_active, now(), req.params.id);
+    `).run(tableNumber, capacity, floor, section, position_x, position_y, kitchen_station_id, now(), req.params.id);
 
     const updated = db.prepare('SELECT * FROM tables WHERE id = ?').get(req.params.id);
     res.json({ table: updated });
