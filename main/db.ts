@@ -5,7 +5,7 @@ import * as fs from 'fs';
 import * as bcrypt from 'bcryptjs';
 
 // Bump this whenever the schema changes incompatibly
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 8;
 
 let db: Database.Database;
 
@@ -150,6 +150,8 @@ function createSchema(): void {
       low_stock_threshold REAL DEFAULT 5,
       tax_type TEXT DEFAULT 'none',
       tax_rate REAL DEFAULT 0,
+      cb_percent REAL DEFAULT 0,
+      tags TEXT,
       deleted_at TEXT,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP,

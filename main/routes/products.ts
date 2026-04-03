@@ -83,7 +83,7 @@ router.post('/', (req: Request, res: Response) => {
     const {
       category_id, name, sku, description, price, cost_price,
       tax_type, tax_rate, track_inventory, stock_quantity,
-      low_stock_threshold, is_active, image_url, sort_order, addon_group_ids
+      low_stock_threshold, is_active, image_url, sort_order, cb_percent, tags, addon_group_ids
     } = req.body;
 
     if (!name || price === undefined) {
@@ -95,14 +95,15 @@ router.post('/', (req: Request, res: Response) => {
     const result = db.prepare(`
       INSERT INTO products (id, category_id, name, sku, description, price, cost,
         tax_type, tax_rate, track_inventory, stock_quantity, low_stock_threshold,
-        is_active, image_url, sort_order, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        is_active, image_url, sort_order, cb_percent, tags, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id, category_id || null, name, sku || null, description || null, price, cost_price || 0,
       tax_type || 'none', tax_rate || 0,
       track_inventory ? 1 : 0, stock_quantity || 0, low_stock_threshold || 0,
       is_active !== false ? 1 : 0, image_url || null,
-      sort_order || 0, now(), now()
+      sort_order || 0, cb_percent || 0, JSON.stringify(tags || []),
+      now(), now()
     );
 
     if (addon_group_ids && addon_group_ids.length > 0) {
@@ -130,7 +131,7 @@ router.put('/:id', (req: Request, res: Response) => {
     const {
       category_id, name, sku, description, price, cost_price,
       tax_type, tax_rate, track_inventory, stock_quantity,
-      low_stock_threshold, is_active, image_url, sort_order, addon_group_ids
+      low_stock_threshold, is_active, image_url, sort_order, cb_percent, tags, addon_group_ids
     } = req.body;
 
     db.prepare(`
@@ -142,7 +143,10 @@ router.put('/:id', (req: Request, res: Response) => {
         stock_quantity = COALESCE(?, stock_quantity), low_stock_threshold = COALESCE(?, low_stock_threshold),
         is_active = COALESCE(?, is_active),
         image_url = COALESCE(?, image_url),
-        sort_order = COALESCE(?, sort_order), updated_at = ?
+        sort_order = COALESCE(?, sort_order),
+        cb_percent = COALESCE(?, cb_percent),
+        tags = COALESCE(?, tags),
+        updated_at = ?
       WHERE id = ?
     `).run(
       category_id, name, sku, description, price, cost_price,
@@ -151,7 +155,9 @@ router.put('/:id', (req: Request, res: Response) => {
       stock_quantity, low_stock_threshold,
       is_active !== undefined ? (is_active ? 1 : 0) : null,
       image_url,
-      sort_order, now(), req.params.id
+      sort_order, cb_percent,
+      tags ? JSON.stringify(tags) : null,
+      now(), req.params.id
     );
 
     // Update addon group links
