@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import { v4 as uuidv4 } from 'uuid';
 import { getDatabase, now } from '../db';
 
 const router = Router();
@@ -200,6 +201,196 @@ router.post('/password/change', (req: Request, res: Response) => {
 
     res.json({ message: 'Password changed successfully' });
   } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ── GET /api/auth/setup/status ──────────────────────────────────────────────────
+// Returns whether the app needs setup (no users exist yet)
+
+router.get('/setup/status', (_req: Request, res: Response) => {
+  try {
+    const db = getDatabase();
+    const userCount = db.prepare('SELECT COUNT(*) as count FROM users').get() as { count: number };
+    const needsSetup = userCount.count === 0;
+    res.json({ needsSetup });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ── POST /api/auth/setup/initialize ─────────────────────────────────────────────
+// Creates the initial admin user and sets business type
+
+router.post('/setup/initialize', (req: Request, res: Response) => {
+  try {
+    const { name, email, password, business_type, business_name } = req.body;
+
+    if (!name || !email || !password) {
+      return res.status(400).json({ error: 'Name, email, and password are required' });
+    }
+
+    if (!['retail', 'restaurant', 'salon'].includes(business_type)) {
+      return res.status(400).json({ error: 'Invalid business type' });
+    }
+
+    const db = getDatabase();
+
+    const existingUser = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
+    if (existingUser) {
+      return res.status(400).json({ error: 'User with this email already exists' });
+    }
+
+    const userId = uuidv4();
+    const hashedPassword = bcrypt.hashSync(password, 10);
+
+    db.prepare(`
+      INSERT INTO users (id, name, email, password, role, is_active, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(userId, name, email, hashedPassword, 'owner', 1, now(), now());
+
+    db.prepare(`
+      INSERT OR REPLACE INTO settings (key, value, updated_at)
+      VALUES ('business_type', ?, ?)
+    `).run(business_type, now());
+
+    if (business_name) {
+      db.prepare(`
+        INSERT OR REPLACE INTO settings (key, value, updated_at)
+        VALUES ('business_name', ?, ?)
+      `).run(business_name, now());
+    }
+
+    const token = jwt.sign(
+      { userId, email, role: 'owner' },
+      JWT_SECRET,
+      { expiresIn: JWT_EXPIRES_IN }
+    );
+
+    const tenant = {
+      id: 1,
+      business_name: business_name || 'My Store',
+      slug: 'local',
+      database_name: 'local',
+      business_type,
+      country: 'IN',
+      currency: business_type === 'retail' ? 'INR' : (business_type === 'restaurant' ? 'INR' : 'INR'),
+      currency_symbol: '₹',
+      timezone: 'Asia/Kolkata',
+      plan: 'desktop',
+      status: 'active',
+      role: 'owner',
+    };
+
+    res.json({
+      access_token: token,
+      token_type: 'bearer',
+      expires_in: 86400,
+      user: { id: userId, name, email, role: 'owner' },
+      tenants: [tenant],
+    });
+  } catch (error: any) {
+    console.error('[Auth] Setup error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ── POST /api/auth/setup/seed ───────────────────────────────────────────────────
+// Seeds demo data for the selected business type
+
+router.post('/setup/seed', (req: Request, res: Response) => {
+  try {
+    const { business_type, business_name } = req.body;
+
+    if (!['retail', 'restaurant', 'salon'].includes(business_type)) {
+      return res.status(400).json({ error: 'Invalid business type' });
+    }
+
+    const db = getDatabase();
+
+    if (business_name) {
+      db.prepare(`INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('business_name', ?, ?)`).run(business_name, now());
+    }
+    db.prepare(`INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('business_type', ?, ?)`).run(business_type, now());
+
+    const hashedPassword = bcrypt.hashSync('admin123', 10);
+    const ownerId = uuidv4();
+    db.prepare(`
+      INSERT OR IGNORE INTO users (id, name, email, password, role, is_active, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(ownerId, 'Owner', 'admin@flo.local', hashedPassword, 'owner', 1, now(), now());
+
+    if (business_type === 'restaurant') {
+      const cats = [
+        ['cat-1', 'Starters', '#FF6B6B', '🍔', 1],
+        ['cat-2', 'Main Course', '#4ECDC4', '🍛', 2],
+        ['cat-3', 'Beverages', '#45B7D1', '🥤', 3],
+        ['cat-4', 'Desserts', '#96CEB4', '🍰', 4],
+      ];
+      for (const [id, name, color, icon, sort] of cats) {
+        db.prepare(`INSERT OR IGNORE INTO categories (id, name, color, icon, sort_order) VALUES (?, ?, ?, ?, ?)`).run(id, name, color, icon, sort);
+      }
+      const products = [
+        ['prod-1', 'cat-1', 'Paneer Tikka', 250, 1],
+        ['prod-2', 'cat-1', 'Chicken Wings', 280, 2],
+        ['prod-3', 'cat-2', 'Butter Chicken', 320, 1],
+        ['prod-4', 'cat-2', 'Dal Makhani', 220, 2],
+        ['prod-5', 'cat-2', 'Jeera Rice', 150, 3],
+        ['prod-6', 'cat-3', 'Cola', 60, 1],
+        ['prod-7', 'cat-3', 'Lemon Soda', 70, 2],
+        ['prod-8', 'cat-4', 'Gulab Jamun', 80, 1],
+      ];
+      for (const [id, catId, name, price, sort] of products) {
+        db.prepare(`INSERT OR IGNORE INTO products (id, category_id, name, price, sort_order, is_active) VALUES (?, ?, ?, ?, ?, 1)`).run(id, catId, name, price, sort);
+      }
+      const tables = [['tbl-1', 'T1', 4], ['tbl-2', 'T2', 4], ['tbl-3', 'T3', 6]];
+      for (const [id, number, capacity] of tables) {
+        db.prepare(`INSERT OR IGNORE INTO tables (id, number, capacity) VALUES (?, ?, ?)`).run(id, number, capacity);
+      }
+    } else if (business_type === 'retail') {
+      const cats = [
+        ['cat-1', 'Electronics', '#3B82F6', '📱', 1],
+        ['cat-2', 'Clothing', '#8B5CF6', '👕', 2],
+        ['cat-3', 'Groceries', '#10B981', '🛒', 3],
+      ];
+      for (const [id, name, color, icon, sort] of cats) {
+        db.prepare(`INSERT OR IGNORE INTO categories (id, name, color, icon, sort_order) VALUES (?, ?, ?, ?, ?)`).run(id, name, color, icon, sort);
+      }
+      const products = [
+        ['prod-1', 'cat-1', 'USB Cable', 199, 1],
+        ['prod-2', 'cat-1', 'Phone Case', 349, 2],
+        ['prod-3', 'cat-2', 'T-Shirt', 599, 1],
+        ['prod-4', 'cat-2', 'Jeans', 1299, 2],
+        ['prod-5', 'cat-3', 'Rice 5kg', 450, 1],
+        ['prod-6', 'cat-3', 'Cooking Oil 1L', 180, 2],
+      ];
+      for (const [id, catId, name, price, sort] of products) {
+        db.prepare(`INSERT OR IGNORE INTO products (id, category_id, name, price, sort_order, is_active) VALUES (?, ?, ?, ?, ?, 1)`).run(id, catId, name, price, sort);
+      }
+    } else if (business_type === 'salon') {
+      const cats = [
+        ['cat-1', 'Hair', '#EC4899', '✂️', 1],
+        ['cat-2', 'Facial', '#F59E0B', '💆', 2],
+        ['cat-3', 'Massage', '#6366F1', '🧘', 3],
+      ];
+      for (const [id, name, color, icon, sort] of cats) {
+        db.prepare(`INSERT OR IGNORE INTO categories (id, name, color, icon, sort_order) VALUES (?, ?, ?, ?, ?)`).run(id, name, color, icon, sort);
+      }
+      const products = [
+        ['prod-1', 'cat-1', 'Haircut', 250, 1],
+        ['prod-2', 'cat-1', 'Hair Coloring', 1500, 2],
+        ['prod-3', 'cat-2', 'Classic Facial', 800, 1],
+        ['prod-4', 'cat-2', 'Gold Facial', 2000, 2],
+        ['prod-5', 'cat-3', 'Body Massage', 1200, 1],
+      ];
+      for (const [id, catId, name, price, sort] of products) {
+        db.prepare(`INSERT OR IGNORE INTO products (id, category_id, name, price, sort_order, is_active) VALUES (?, ?, ?, ?, ?, 1)`).run(id, catId, name, price, sort);
+      }
+    }
+
+    res.json({ message: 'Demo data seeded successfully' });
+  } catch (error: any) {
+    console.error('[Auth] Seed error:', error);
     res.status(500).json({ error: error.message });
   }
 });

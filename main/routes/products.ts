@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { v4 as uuidv4 } from 'uuid';
 import { getDatabase, now } from '../db';
 
 const router = Router();
@@ -91,13 +92,14 @@ router.post('/', (req: Request, res: Response) => {
     }
 
     const db = getDatabase();
+    const id = uuidv4();
     const result = db.prepare(`
-      INSERT INTO products (category_id, name, sku, description, price, cost_price, cb_percent,
+      INSERT INTO products (id, category_id, name, sku, description, price, cost, cb_percent,
         tax_type, tax_rate, hsn_code, track_inventory, stock_quantity, low_stock_threshold,
         is_active, available_online, image_url, tags, variants, modifiers, sort_order, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
-      category_id || null, name, sku || null, description || null, price, cost_price || 0, cb_percent || 0,
+      id, category_id || null, name, sku || null, description || null, price, cost_price || 0, cb_percent || 0,
       tax_type || 'none', tax_rate || 0, hsn_code || null,
       track_inventory ? 1 : 0, stock_quantity || 0, low_stock_threshold || 0,
       is_active !== false ? 1 : 0, available_online ? 1 : 0, image_url || null,
@@ -105,17 +107,15 @@ router.post('/', (req: Request, res: Response) => {
       sort_order || 0, now(), now()
     );
 
-    const productId = result.lastInsertRowid;
-
     // Link addon groups
     if (addon_group_ids && addon_group_ids.length > 0) {
       const insertAgp = db.prepare('INSERT INTO addon_group_product (addon_group_id, product_id) VALUES (?, ?)');
       for (const agId of addon_group_ids) {
-        insertAgp.run(agId, productId);
+        insertAgp.run(agId, id);
       }
     }
 
-    const product = db.prepare('SELECT * FROM products WHERE id = ?').get(productId);
+    const product = db.prepare('SELECT * FROM products WHERE id = ?').get(id);
     res.status(201).json({ product });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -140,7 +140,7 @@ router.put('/:id', (req: Request, res: Response) => {
     db.prepare(`
       UPDATE products SET category_id = COALESCE(?, category_id), name = COALESCE(?, name),
         sku = COALESCE(?, sku), description = COALESCE(?, description), price = COALESCE(?, price),
-        cost_price = COALESCE(?, cost_price), cb_percent = COALESCE(?, cb_percent),
+        cost = COALESCE(?, cost), cb_percent = COALESCE(?, cb_percent),
         tax_type = COALESCE(?, tax_type), tax_rate = COALESCE(?, tax_rate),
         hsn_code = COALESCE(?, hsn_code), track_inventory = COALESCE(?, track_inventory),
         stock_quantity = COALESCE(?, stock_quantity), low_stock_threshold = COALESCE(?, low_stock_threshold),
