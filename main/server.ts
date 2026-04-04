@@ -68,13 +68,7 @@ export function startServer(): Promise<void> {
       app.use(express.static(frontendDir));
 
       // SPA fallback: any unknown path returns index.html so Next.js
-      // client-side routing works. Exclude /api (API routes).
-      app.get(/^(?!\/api).*$/, (_req: Request, res: Response) => {
-        res.sendFile(path.join(frontendDir, 'index.html'));
-      });
-
-      // SPA fallback: any unknown path returns index.html so Next.js
-      // client-side routing works. Exclude /api (API routes) and /kds (handled above).
+      // client-side routing works. Exclude /api (API routes) and /kds.
       app.get(/^(?!\/api|\/kds).*$/, (_req: Request, res: Response) => {
         res.sendFile(path.join(frontendDir, 'index.html'));
       });
