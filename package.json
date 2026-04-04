@@ -4,7 +4,7 @@
   "description": "Flo - Self-hosted Point of Sale System",
   "main": "dist/index.js",
   "scripts": {
-    "dev": "npm run build && electron .",
+    "dev": "npm run build:frontend && npm run build && electron .",
     "dev:frontend": "cd frontend && npm run dev",
     "build": "tsc",
     "build:frontend": "cd frontend && npm ci && NEXT_BUILD_MODE=desktop NEXT_PUBLIC_API_URL=http://localhost:3001/api npm run build",
