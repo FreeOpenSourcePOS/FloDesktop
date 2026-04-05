@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import { Bonjour } from 'bonjour-service';
 import { initDatabase, closeDatabase } from './db';
 import { startServer, stopServer, getLocalIP, isServerRunning } from './server';
+import { startKdsServer, stopKdsServer, getKdsPort, isKdsServerRunning } from './kds-server';
 import { initPrinter, printReceipt, printKOT } from './printers/thermal';
 import { registerIpcHandlers } from './ipc';
 import log from 'electron-log/main';
@@ -137,9 +138,8 @@ function createWindow(): void {
 
   mainWindow.once('ready-to-show', () => {
     mainWindow?.show();
-    // DevTools can be opened with F12 or the Developer menu.
-    // Auto-opening causes harmless but noisy Autofill CDP errors because
-    // Electron does not implement the Autofill domain of the Chrome DevTools Protocol.
+    // Open DevTools to debug logo issue
+    mainWindow?.webContents.openDevTools();
   });
 
   // Always load from the embedded Express server (serves static Next.js export).
@@ -245,10 +245,11 @@ function startMdns(): void {
       type: 'http',
       port: PORT,
       host: 'flo',   // resolves as flo.local on the LAN
-      txt: { version: app.getVersion(), kds: `/kds` },
+      txt: { version: app.getVersion(), kds: `/kds`, kds_port: String(getKdsPort()) },
     });
     const ip = getLocalIP();
     console.log(`[mDNS] Advertising flo.local:${PORT}  (IP fallback: http://${ip}:${PORT})`);
+    console.log(`[mDNS] KDS available at http://flo.local:${getKdsPort()}  (IP fallback: http://${ip}:${getKdsPort()})`);
   } catch (err) {
     console.warn('[mDNS] Could not start Bonjour:', err);
   }
@@ -324,6 +325,7 @@ function createMenu(): void {
 
 function showAbout(): void {
   const ip = getLocalIP();
+  const kdsPort = getKdsPort();
   dialog.showMessageBox({
     type: 'info',
     title: 'About Flo',
@@ -336,8 +338,10 @@ function showAbout(): void {
       'A self-hosted, offline-first Point of Sale system.',
       'Your data stays yours.',
       '',
-      `KDS URL: http://flo.local:${PORT}/kds`,
-      `IP fallback: http://${ip}:${PORT}/kds`,
+      `POS URL: http://flo.local:${PORT}`,
+      `KDS URL: http://flo.local:${kdsPort}`,
+      '',
+      `KDS IP fallback: http://${ip}:${kdsPort}`,
     ].join('\n'),
   });
 }
@@ -351,6 +355,9 @@ async function initialize(): Promise<void> {
 
     console.log('[Flo] Starting local server...');
     await startServer();
+
+    console.log('[Flo] Starting KDS server on port 3002...');
+    await startKdsServer();
 
     console.log('[Flo] Starting mDNS advertisement...');
     startMdns();
@@ -424,6 +431,7 @@ app.on('before-quit', () => {
 app.on('quit', () => {
   console.log('[Flo] Shutting down...');
   stopMdns();
+  stopKdsServer();
   stopServer();
   closeDatabase();
   console.log('[Flo] Goodbye!');

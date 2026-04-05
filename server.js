@@ -326,6 +326,35 @@ app.get('/api/customers', (req, res) => {
   res.json(customers);
 });
 
+app.get('/api/customers-search', (req, res) => {
+  const { q } = req.query;
+  if (!q || q.length < 2) {
+    return res.json([]);
+  }
+  const searchTerm = `%${q}%`;
+  const customers = db.prepare(`
+    SELECT * FROM customers 
+    WHERE isActive = 1 
+    AND (name LIKE ? OR phone LIKE ? OR email LIKE ?)
+    ORDER BY name
+    LIMIT 10
+  `).all(searchTerm, searchTerm, searchTerm);
+  res.json(customers);
+});
+
+app.get('/api/crm/lookup', (req, res) => {
+  const { phone, country_code } = req.query;
+  if (!phone) {
+    return res.status(400).json({ error: 'Phone number required' });
+  }
+  const customer = db.prepare('SELECT * FROM customers WHERE phone = ? AND isActive = 1').get(phone);
+  if (customer) {
+    res.json({ found: true, customer });
+  } else {
+    res.json({ found: false, customer: null });
+  }
+});
+
 app.post('/api/customers', (req, res) => {
   const { name, email, phone, address, loyaltyPoints } = req.body;
   const id = 'cust-' + Date.now();
@@ -426,7 +455,7 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', service: 'FloPos Local API', version: '1.0.0', timestamp: new Date().toISOString() });
 });
 
-const PORT = process.env.PORT || 3088;
+const PORT = process.env.PORT || 3001;
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`FloPos API Server running on http://localhost:${PORT}`);
   console.log('Endpoints:');
@@ -442,6 +471,8 @@ const server = app.listen(PORT, '0.0.0.0', () => {
   console.log('  PATCH /api/orders/:id/status');
   console.log('  GET  /api/customers');
   console.log('  POST /api/customers');
+  console.log('  GET  /api/customers-search');
+  console.log('  GET  /api/crm/lookup');
   console.log('  GET  /api/tables');
   console.log('  POST /api/tables');
   console.log('  GET  /api/settings');

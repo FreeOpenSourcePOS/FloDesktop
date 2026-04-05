@@ -39,7 +39,8 @@ router.patch('/:id/status', (req: Request, res: Response) => {
   }
 });
 
-router.delete('/:orderId/items/:itemId', (req: Request, res: Response) => {
+// Soft-delete item - set status to 'cancelled' (not actual DELETE)
+router.patch('/:orderId/items/:itemId/cancel', (req: Request, res: Response) => {
   try {
     const { orderId, itemId } = req.params;
     const userRole = req.headers['x-user-role'] as string;
@@ -54,8 +55,56 @@ router.delete('/:orderId/items/:itemId', (req: Request, res: Response) => {
       return res.status(404).json({ error: 'Order not found' });
     }
 
-    if (order.status !== 'pending') {
-      return res.status(400).json({ error: 'Can only cancel items from pending orders' });
+    const item = db.prepare('SELECT * FROM order_items WHERE id = ? AND order_id = ?').get(itemId, orderId) as any;
+    if (!item) {
+      return res.status(404).json({ error: 'Item not found in this order' });
+    }
+
+    // Soft delete - mark as cancelled
+    db.prepare("UPDATE order_items SET status = 'cancelled', updated_at = ? WHERE id = ?")
+      .run(now(), itemId);
+
+    // Recalculate order totals excluding cancelled items
+    const activeItems = db.prepare("SELECT * FROM order_items WHERE order_id = ? AND status != 'cancelled'")
+      .all(orderId) as any[];
+    let subtotal = 0;
+    let totalTax = 0;
+    for (const i of activeItems) {
+      subtotal += i.subtotal || 0;
+      totalTax += i.tax_amount || 0;
+    }
+    const preRoundTotal = subtotal + totalTax + ((order as any).packaging_charge || 0);
+    const roundOff = Math.round(preRoundTotal) - preRoundTotal;
+    const total = Math.round(preRoundTotal) + roundOff;
+
+    db.prepare(`
+      UPDATE orders SET subtotal = ?, tax_amount = ?, total = ?, round_off = ?, updated_at = ? WHERE id = ?
+    `).run(subtotal, totalTax, total, roundOff, now(), orderId);
+
+    const updatedOrder = db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId) as any;
+    const items = db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(orderId).map(parseItemJson);
+
+    res.json({ order: { ...updatedOrder, items } });
+  } catch (error: any) {
+    console.error('[OrderItems] Cancel error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Restore cancelled item
+router.patch('/:orderId/items/:itemId/restore', (req: Request, res: Response) => {
+  try {
+    const { orderId, itemId } = req.params;
+    const userRole = req.headers['x-user-role'] as string;
+
+    if (!userRole || !['owner', 'manager'].includes(userRole.toLowerCase())) {
+      return res.status(403).json({ error: 'Only owner or manager can restore items' });
+    }
+
+    const db = getDatabase();
+    const order = db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId) as any;
+    if (!order) {
+      return res.status(404).json({ error: 'Order not found' });
     }
 
     const item = db.prepare('SELECT * FROM order_items WHERE id = ? AND order_id = ?').get(itemId, orderId) as any;
@@ -63,42 +112,33 @@ router.delete('/:orderId/items/:itemId', (req: Request, res: Response) => {
       return res.status(404).json({ error: 'Item not found in this order' });
     }
 
-    if (item.product_id) {
-      const product = db.prepare('SELECT * FROM products WHERE id = ?').get(item.product_id) as any;
-      if (product?.track_inventory) {
-        db.prepare('UPDATE products SET stock_quantity = stock_quantity + ?, updated_at = ? WHERE id = ?')
-          .run(item.quantity, now(), item.product_id);
-      }
-    }
+    // Restore - mark as pending
+    db.prepare("UPDATE order_items SET status = 'pending', updated_at = ? WHERE id = ?")
+      .run(now(), itemId);
 
-    db.prepare('DELETE FROM order_items WHERE id = ?').run(itemId);
-
-    const remainingItems = db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(orderId).map(parseItemJson);
+    // Recalculate order totals
+    const activeItems = db.prepare("SELECT * FROM order_items WHERE order_id = ? AND status != 'cancelled'")
+      .all(orderId) as any[];
     let subtotal = 0;
     let totalTax = 0;
-    for (const i of remainingItems) {
-      subtotal += i.subtotal;
-      totalTax += i.tax_amount;
+    for (const i of activeItems) {
+      subtotal += i.subtotal || 0;
+      totalTax += i.tax_amount || 0;
     }
     const preRoundTotal = subtotal + totalTax + ((order as any).packaging_charge || 0);
     const roundOff = Math.round(preRoundTotal) - preRoundTotal;
     const total = Math.round(preRoundTotal) + roundOff;
+
     db.prepare(`
-      UPDATE orders SET
-        subtotal = ?,
-        tax_amount = ?,
-        total = ?,
-        round_off = ?,
-        updated_at = ?
-      WHERE id = ?
+      UPDATE orders SET subtotal = ?, tax_amount = ?, total = ?, round_off = ?, updated_at = ? WHERE id = ?
     `).run(subtotal, totalTax, total, roundOff, now(), orderId);
 
     const updatedOrder = db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId) as any;
     const items = db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(orderId).map(parseItemJson);
 
-    res.json({ order: { ...updatedOrder, items }, deleted: itemId });
+    res.json({ order: { ...updatedOrder, items } });
   } catch (error: any) {
-    console.error('[OrderItems] Delete error:', error);
+    console.error('[OrderItems] Restore error:', error);
     res.status(500).json({ error: error.message });
   }
 });

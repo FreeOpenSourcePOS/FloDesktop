@@ -72,7 +72,8 @@ router.post('/generate', (req: Request, res: Response) => {
 
     const existingBill = db.prepare('SELECT * FROM bills WHERE order_id = ?').get(order_id);
     if (existingBill) {
-      return res.status(400).json({ error: 'Bill already exists for this order' });
+      // Return existing bill instead of error
+      return res.json({ bill: existingBill });
     }
 
     const billNumber = generateBillNumber();

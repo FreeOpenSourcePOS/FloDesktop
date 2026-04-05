@@ -41,7 +41,8 @@ router.get('/', (req: Request, res: Response) => {
       const tableRow = order.table_id ? db.prepare('SELECT * FROM tables WHERE id = ?').get(order.table_id) as any : null;
       const table = tableRow ? { ...tableRow, name: tableRow.number } : null;
       const customer = order.customer_id ? db.prepare('SELECT * FROM customers WHERE id = ?').get(order.customer_id) : null;
-      return { ...order, items, table, customer };
+      const bill = db.prepare('SELECT * FROM bills WHERE order_id = ?').get(order.id) as any;
+      return { ...order, items, table, customer, bill };
     });
 
     res.json({ orders: ordersWithRelations });

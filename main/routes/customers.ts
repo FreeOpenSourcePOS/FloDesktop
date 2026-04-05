@@ -3,7 +3,7 @@ import { getDatabase, now } from '../db';
 
 const router = Router();
 
-function getWalletBalance(customerId: number): number {
+function getWalletBalance(customerId: string | number): number {
   const db = getDatabase();
   const credits = db.prepare(`
     SELECT COALESCE(SUM(amount), 0) as total FROM loyalty_ledger
@@ -17,6 +17,17 @@ function getWalletBalance(customerId: number): number {
 
   return Math.max(0, credits.total - debits.total);
 }
+
+// Cleanup endpoint: delete all customers with null IDs - must be before /:id
+router.delete('/admin/cleanup', (req: Request, res: Response) => {
+  try {
+    const db = getDatabase();
+    const result = db.prepare("DELETE FROM customers WHERE id IS NULL").run();
+    res.json({ message: `Deleted ${result.changes} customers with null IDs` });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
 
 router.get('/', (req: Request, res: Response) => {
   try {
@@ -71,20 +82,19 @@ router.get('/search', (req: Request, res: Response) => {
 router.get('/:id', (req: Request, res: Response) => {
   try {
     const db = getDatabase();
-    const customerId = parseInt(req.params.id);
-    const customer = db.prepare('SELECT * FROM customers WHERE id = ?').get(customerId);
+    const customer = db.prepare('SELECT * FROM customers WHERE id = ?').get(req.params.id);
     if (!customer) {
       return res.status(404).json({ error: 'Customer not found' });
     }
 
-    const walletBalance = getWalletBalance(customerId);
+    const walletBalance = getWalletBalance(req.params.id);
     const loyaltyHistory = db.prepare(`
       SELECT * FROM loyalty_ledger WHERE customer_id = ? ORDER BY created_at DESC LIMIT 50
-    `).all(customerId);
+    `).all(req.params.id);
 
     const recentOrders = db.prepare(`
       SELECT * FROM orders WHERE customer_id = ? ORDER BY created_at DESC LIMIT 10
-    `).all(customerId);
+    `).all(req.params.id);
 
     res.json({ customer: { ...customer, walletBalance, loyaltyHistory, recentOrders } });
   } catch (error: any) {
@@ -114,12 +124,10 @@ router.get('/:id/wallet', (req: Request, res: Response) => {
 
 router.post('/', (req: Request, res: Response) => {
   try {
-    const {
-      phone, name, email, address, notes
-    } = req.body;
+    const { phone, name, email, address, notes } = req.body;
 
-    if (!name) {
-      return res.status(400).json({ error: 'Name is required' });
+    if (!name || !name.trim()) {
+      return res.status(400).json({ message: 'Name is required' });
     }
 
     const db = getDatabase();
@@ -127,22 +135,30 @@ router.post('/', (req: Request, res: Response) => {
     if (phone) {
       const existing = db.prepare('SELECT * FROM customers WHERE phone = ?').get(phone);
       if (existing) {
-        return res.status(400).json({ error: 'Customer with this phone already exists' });
+        return res.status(400).json({ message: 'Customer with this phone already exists' });
       }
     }
 
-    const result = db.prepare(`
-      INSERT INTO customers (phone, name, email, address, notes, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+    const id = 'cust-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
+    db.prepare(`
+      INSERT INTO customers (id, phone, name, email, address, notes, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
-      phone || null, name, email || null, address || null, notes || null,
-      now(), now()
+      id,
+      phone ? String(phone).trim() : null,
+      String(name).trim(),
+      email ? String(email).trim() : null,
+      address ? String(address).trim() : null,
+      notes ? String(notes).trim() : null,
+      now(),
+      now()
     );
 
-    const customer = db.prepare('SELECT * FROM customers WHERE id = ?').get(result.lastInsertRowid);
+    const customer = db.prepare('SELECT * FROM customers WHERE id = ?').get(id);
     res.status(201).json({ customer });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    console.error('[Customer POST error]', error);
+    res.status(500).json({ message: 'Failed to create customer: ' + error.message });
   }
 });
 
