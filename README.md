@@ -16,6 +16,13 @@ A self-hosted, offline-first Point of Sale (POS) system for restaurants and reta
 - Node.js 20+
 - npm 9+
 
+## Default Login
+
+After first run, use these credentials:
+
+- **Email:** `admin@flo.local`
+- **Password:** `admin123`
+
 ## Getting Started
 
 ```bash
