@@ -20,8 +20,16 @@ A self-hosted, offline-first Point of Sale (POS) system for restaurants and reta
 
 After first run, use these credentials:
 
+### Owner/Admin
 - **Email:** `admin@flo.local`
 - **Password:** `admin123`
+
+### Kitchen (KDS)
+- **Email:** `chef@flo.local`
+- **Password:** `chef123`
+
+- **Email:** `kitchen@flo.local`
+- **Password:** `chef123`
 
 ## Getting Started
 

@@ -415,6 +415,18 @@ function seedData(): void {
     VALUES (?, ?, ?, ?, ?)
   `).run('user-1', 'Owner', 'admin@flo.local', hashedPassword, 'owner');
 
+  // Default KDS/Chef accounts
+  const chefPassword = bcrypt.hashSync('chef123', 10);
+  db.prepare(`
+    INSERT OR IGNORE INTO users (id, name, email, password, role)
+    VALUES (?, ?, ?, ?, ?)
+  `).run('user-2', 'Chef', 'chef@flo.local', chefPassword, 'chef');
+
+  db.prepare(`
+    INSERT OR IGNORE INTO users (id, name, email, password, role)
+    VALUES (?, ?, ?, ?, ?)
+  `).run('user-3', 'Kitchen Manager', 'kitchen@flo.local', chefPassword, 'manager');
+
   // Sample categories
   const cats = [
     ['cat-1', 'Food',      '#FF6B6B', '🍔', 1],

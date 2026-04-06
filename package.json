@@ -106,7 +106,9 @@
       "category": "public.app-category.business",
       "identity": "Codify Apps Private Limited (BKDY677XJA)",
       "entitlements": "build/entitlements.plist",
-      "entitlementsInherit": "build/entitlements.plist"
+      "entitlementsInherit": "build/entitlements.plist",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false
     },
     "linux": {
       "target": [
