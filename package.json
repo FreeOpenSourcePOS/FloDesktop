@@ -1,6 +1,6 @@
 {
   "name": "flo-desktop",
-  "version": "1.5.0",
+  "version": "1.4.0",
   "description": "Flo - Self-hosted Point of Sale System",
   "main": "dist/index.js",
   "scripts": {
