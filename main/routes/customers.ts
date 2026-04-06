@@ -32,26 +32,23 @@ router.delete('/admin/cleanup', (req: Request, res: Response) => {
 router.get('/', (req: Request, res: Response) => {
   try {
     const db = getDatabase();
-    let query = 'SELECT * FROM customers WHERE 1=1';
+    let query = 'SELECT c.*, COALESCE((SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id), 0) as visits_count, COALESCE((SELECT SUM(total) FROM orders o WHERE o.customer_id = c.id), 0) as total_spent FROM customers c WHERE 1=1';
     const params: any[] = [];
 
-    if (req.query.phone) {
-      query += ' AND phone LIKE ?';
-      params.push(`%${req.query.phone}%`);
-    }
-    if (req.query.name) {
-      query += ' AND name LIKE ?';
-      params.push(`%${req.query.name}%`);
+    if (req.query.search) {
+      const search = `%${req.query.search}%`;
+      query += ' AND (c.name LIKE ? OR c.phone LIKE ? OR c.email LIKE ?)';
+      params.push(search, search, search);
     }
 
-    query += ' ORDER BY name';
+    query += ' ORDER BY c.name';
 
     if (req.query.per_page) {
       query += ` LIMIT ${parseInt(req.query.per_page as string)}`;
     }
 
     const customers = db.prepare(query).all(...params);
-    res.json({ customers });
+    res.json({ data: customers });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -165,7 +162,7 @@ router.post('/', (req: Request, res: Response) => {
 router.put('/:id', (req: Request, res: Response) => {
   try {
     const {
-      phone, name, email, address, notes
+      phone, name, email, address, notes, country_code
     } = req.body;
     const db = getDatabase();
 
@@ -176,15 +173,16 @@ router.put('/:id', (req: Request, res: Response) => {
 
     db.prepare(`
       UPDATE customers SET
-        phone = COALESCE(?, phone),
-        name = COALESCE(?, name),
-        email = COALESCE(?, email),
-        address = COALESCE(?, address),
-        notes = COALESCE(?, notes),
+        phone = COALESCE(NULLIF(?, ''), phone),
+        name = COALESCE(NULLIF(?, ''), name),
+        email = COALESCE(NULLIF(?, ''), email),
+        country_code = COALESCE(NULLIF(?, ''), country_code),
+        address = COALESCE(NULLIF(?, ''), address),
+        notes = COALESCE(NULLIF(?, ''), notes),
         updated_at = ?
       WHERE id = ?
     `).run(
-      phone, name, email, address, notes, now(), req.params.id
+      phone, name, email, country_code, address, notes, now(), req.params.id
     );
 
     const updated = db.prepare('SELECT * FROM customers WHERE id = ?').get(req.params.id);

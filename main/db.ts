@@ -222,6 +222,7 @@ function createSchema(): void {
       name TEXT NOT NULL,
       email TEXT,
       phone TEXT,
+      country_code TEXT DEFAULT '+91',
       address TEXT,
       loyalty_points INTEGER DEFAULT 0,
       notes TEXT,
