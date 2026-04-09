@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { getDatabase, now } from '../db';
 import { v4 as uuidv4 } from 'uuid';
-import { printViaNetwork, printViaUSB, buildTestPage } from '../printers/thermal';
+import { printViaNetwork, printViaUSB, buildTestPage, printReceipt, printKOT, detectConnectedPrinters } from '../printers/thermal';
 
 const router = Router();
 
@@ -12,6 +12,18 @@ router.get('/', (_req: Request, res: Response) => {
     const printers = db.prepare('SELECT * FROM printers ORDER BY is_default DESC, name').all();
     res.json({ printers });
   } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/printers/detect — detect connected USB/network printers
+router.get('/detect', async (_req: Request, res: Response) => {
+  try {
+    const printers = await detectConnectedPrinters();
+    console.log('[Printer] Detected printers:', printers);
+    res.json({ printers });
+  } catch (error: any) {
+    console.error('[Printer] Detection error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -45,8 +57,12 @@ router.post('/', (req: Request, res: Response) => {
     const db = getDatabase();
     const id = uuidv4();
 
-    // If new printer should be default, clear existing default first
-    if (is_default) {
+    // Check if this is the first printer - auto-set as default
+    const existingPrinters = db.prepare('SELECT COUNT(*) as count FROM printers').get() as any;
+    const isFirstPrinter = existingPrinters?.count === 0;
+    
+    // If new printer should be default, or it's the first printer, clear existing default first
+    if (is_default || isFirstPrinter) {
       db.prepare('UPDATE printers SET is_default = 0').run();
     }
 
@@ -59,7 +75,7 @@ router.post('/', (req: Request, res: Response) => {
       port || 9100,
       usb_device_path || null,
       paper_width || '80mm',
-      is_default ? 1 : 0,
+      (is_default || isFirstPrinter) ? 1 : 0,
       now(), now()
     );
 
@@ -158,8 +174,8 @@ router.post('/:id/test', async (req: Request, res: Response) => {
         success = await printViaNetwork(printer.ip_address, printer.port || 9100, testData);
         break;
       case 'usb':
-        if (!printer.usb_device_path) return res.status(400).json({ error: 'No USB device path configured' });
-        success = await printViaUSB(testData, printer.usb_device_path);
+        // node-thermal-printer auto-detects USB printers, no path needed
+        success = await printViaUSB(testData, undefined);
         break;
       case 'webusb':
         // WebUSB is handled entirely in the browser; return the bytes for the frontend to send
@@ -172,6 +188,132 @@ router.post('/:id/test', async (req: Request, res: Response) => {
       res.status(502).json({ error: 'Printer did not respond or print failed' });
     }
   } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/printers/print-bill — print bill via backend (desktop app)
+router.post('/print-bill', async (req: Request, res: Response) => {
+  try {
+    const { billId, orderId } = req.body;
+    console.log('[Print Bill] Request:', { billId, orderId });
+    
+    if (!billId && !orderId) {
+      console.log('[Print Bill] Error: No billId or orderId provided');
+      return res.status(400).json({ error: 'billId or orderId is required' });
+    }
+
+    const db = getDatabase();
+    const printer = db.prepare('SELECT * FROM printers WHERE is_default = 1').get();
+    console.log('[Print Bill] Default printer:', printer);
+    
+    if (!printer) {
+      console.log('[Print Bill] Error: No default printer');
+      return res.status(400).json({ error: 'No default printer configured. Add a printer in Settings.' });
+    }
+
+    // Get bill and order data
+    let bill: any;
+    if (billId) {
+      bill = db.prepare('SELECT * FROM bills WHERE id = ?').get(billId);
+    } else {
+      bill = db.prepare('SELECT b.* FROM bills b WHERE b.order_id = ?').get(orderId);
+    }
+
+    if (!bill) {
+      return res.status(404).json({ error: 'Bill not found' });
+    }
+
+    const order: any = db.prepare('SELECT * FROM orders WHERE id = ?').get(bill.order_id);
+    if (!order) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+
+    // Fetch order items
+    const items: any[] = db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(bill.order_id);
+    order.items = items;
+
+    // Fetch table info
+    if (order.table_id) {
+      const table: any = db.prepare('SELECT * FROM tables WHERE id = ?').get(order.table_id);
+      if (table) {
+        order.table = { name: table.number };
+      }
+    }
+
+    // Fetch business settings for bill template
+    const businessName = db.prepare("SELECT value FROM settings WHERE key = 'business_name'").get() as any;
+    const businessAddress = db.prepare("SELECT value FROM settings WHERE key = 'address'").get() as any;
+    const businessPhone = db.prepare("SELECT value FROM settings WHERE key = 'phone'").get() as any;
+    const gstin = db.prepare("SELECT value FROM settings WHERE key = 'gstin'").get() as any;
+    const billTemplate = db.prepare("SELECT value FROM settings WHERE key = 'bill_template'").get() as any;
+
+    const business = {
+      name: businessName?.value || 'Store',
+      address: businessAddress?.value || '',
+      phone: businessPhone?.value || '',
+      gstin: gstin?.value || '',
+    };
+
+    // Use existing printReceipt function with template support
+    const success = await printReceipt(order, bill, business, billTemplate?.value || 'compact');
+
+    if (success) {
+      res.json({ success: true });
+    } else {
+      res.status(502).json({ error: 'Print failed. Check printer connection and settings.' });
+    }
+  } catch (error: any) {
+    console.error('[Print Bill] Error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/printers/print-kot — print KOT via backend (desktop app)
+router.post('/print-kot', async (req: Request, res: Response) => {
+  try {
+    const { orderId, stationName, items } = req.body;
+    
+    if (!orderId) {
+      return res.status(400).json({ error: 'orderId is required' });
+    }
+
+    const db = getDatabase();
+    const printer = db.prepare('SELECT * FROM printers WHERE is_default = 1').get();
+    
+    if (!printer) {
+      return res.status(400).json({ error: 'No default printer configured. Add a printer in Settings.' });
+    }
+
+    const order: any = db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId);
+    if (!order) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+
+    // Fetch order items from database
+    const orderItems: any[] = db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(orderId);
+    
+    // Fetch table info if available
+    let tableName: string | undefined;
+    if (order.table_id) {
+      const table: any = db.prepare('SELECT * FROM tables WHERE id = ?').get(order.table_id);
+      if (table) {
+        order.table = { name: table.number };
+      }
+    }
+
+    // Use existing printKOT function
+    const kotItems = items || orderItems;
+    const station = stationName || 'Kitchen';
+    const success = await printKOT(order, kotItems, station);
+
+    if (success) {
+      res.json({ success: true });
+    } else {
+      res.status(502).json({ error: 'KOT print failed. Check printer connection.' });
+    }
+  } catch (error: any) {
+    console.error('[Print KOT] Error:', error);
     res.status(500).json({ error: error.message });
   }
 });
