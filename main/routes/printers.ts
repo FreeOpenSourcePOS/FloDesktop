@@ -221,17 +221,22 @@ router.post('/print-bill', async (req: Request, res: Response) => {
     }
 
     if (!bill) {
+      console.log('[Print Bill] Error: Bill not found');
       return res.status(404).json({ error: 'Bill not found' });
     }
+    console.log('[Print Bill] Bill:', bill.bill_number, 'Total:', bill.total);
 
     const order: any = db.prepare('SELECT * FROM orders WHERE id = ?').get(bill.order_id);
     if (!order) {
+      console.log('[Print Bill] Error: Order not found');
       return res.status(404).json({ error: 'Order not found' });
     }
+    console.log('[Print Bill] Order:', order.order_number);
 
     // Fetch order items
     const items: any[] = db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(bill.order_id);
     order.items = items;
+    console.log('[Print Bill] Items count:', items.length);
 
     // Fetch table info
     if (order.table_id) {
@@ -254,9 +259,12 @@ router.post('/print-bill', async (req: Request, res: Response) => {
       phone: businessPhone?.value || '',
       gstin: gstin?.value || '',
     };
+    console.log('[Print Bill] Business:', business.name, 'Template:', billTemplate?.value || 'compact');
 
     // Use existing printReceipt function with template support
+    console.log('[Print Bill] Calling printReceipt...');
     const success = await printReceipt(order, bill, business, billTemplate?.value || 'compact');
+    console.log('[Print Bill] Print result:', success);
 
     if (success) {
       res.json({ success: true });
@@ -265,6 +273,7 @@ router.post('/print-bill', async (req: Request, res: Response) => {
     }
   } catch (error: any) {
     console.error('[Print Bill] Error:', error);
+    console.error('[Print Bill] Error stack:', error.stack);
     res.status(500).json({ error: error.message });
   }
 });

@@ -283,8 +283,20 @@ export async function printReceipt(order: any, bill: any, business?: any, templa
       return false;
     }
     console.log('[Printer] Using printer:', printer.name, printer.connection_type);
-    const data = formatReceipt(order, bill, business, template);
-    console.log('[Printer] Receipt data length:', data.length, 'bytes');
+    
+    const paperWidth = printer.paper_width || '80mm';
+    const cols = paperWidth === '58mm' ? 42 : 48;
+    
+    let data: Buffer;
+    try {
+      data = formatReceipt(order, bill, business, template, cols);
+      console.log('[Printer] Receipt data length:', data.length, 'bytes');
+      console.log('[Printer] First 100 bytes:', Array.from(data.slice(0, 100)).map(b => b.toString(16)).join(' '));
+    } catch (err) {
+      console.error('[Printer] formatReceipt failed:', err);
+      throw err;
+    }
+    
     return await dispatchPrint(printer, data);
   } catch (error: any) {
     console.error('[Printer] Print error:', error);
@@ -301,7 +313,11 @@ export async function printKOT(order: any, items: any[], stationName: string): P
       return false;
     }
     console.log('[Printer] Using printer:', printer.name, printer.connection_type);
-    const data = formatKOT(order, items, stationName);
+    
+    const paperWidth = printer.paper_width || '80mm';
+    const cols = paperWidth === '58mm' ? 42 : 48;
+    
+    const data = formatKOT(order, items, stationName, cols);
     console.log('[Printer] KOT data length:', data.length, 'bytes');
     return await dispatchPrint(printer, data);
   } catch (error: any) {
@@ -331,10 +347,10 @@ function getPrinterConfig(): any {
   return db.prepare('SELECT * FROM printers WHERE is_default = 1').get();
 }
 
-function formatReceipt(order: any, bill: any, business?: any, template?: string): Buffer {
+function formatReceipt(order: any, bill: any, business?: any, template?: string, cols: number = 48): Buffer {
   console.log('[Printer] formatReceipt - template:', template);
   console.log('[Printer] formatReceipt - order:', order?.order_number, 'bill:', bill?.bill_number);
-  console.log('[Printer] formatReceipt - items count:', order?.items?.length || 0);
+  console.log('[Printer] formatReceipt - items count:', order?.items?.length || 0, 'cols:', cols);
   
   const tpl = template || 'compact';
   const biz = business || { name: 'Store', address: '', phone: '', gstin: '' };
@@ -342,11 +358,11 @@ function formatReceipt(order: any, bill: any, business?: any, template?: string)
   try {
     switch (tpl) {
       case 'classic':
-        return formatClassicReceipt(order, bill, biz);
+        return formatClassicReceipt(order, bill, biz, cols);
       case 'detailed':
-        return formatDetailedReceipt(order, bill, biz);
+        return formatDetailedReceipt(order, bill, biz, cols);
       default:
-        return formatCompactReceipt(order, bill, biz);
+        return formatCompactReceipt(order, bill, biz, cols);
     }
   } catch (err) {
     console.error('[Printer] formatReceipt error:', err);
@@ -354,159 +370,196 @@ function formatReceipt(order: any, bill: any, business?: any, template?: string)
   }
 }
 
-function formatCompactReceipt(order: any, bill: any, biz: any): Buffer {
+function formatCompactReceipt(order: any, bill: any, biz: any, cols: number = 48): Buffer {
   const lines: string[] = [];
-  const currency = '₹';
   const date = new Date(order.created_at);
+  
+  const bar = '='.repeat(cols);
+  const dash = '-'.repeat(cols);
+  
+  const itemNameLen = cols === 42 ? 22 : 28;
+  const amtLen = cols === 42 ? 10 : 10;
 
   lines.push('{INIT}');
-  lines.push('{CENTER}{BOLD}' + biz.name + '{/BOLD}{/CENTER}');
-  if (biz.address) lines.push('{CENTER}' + biz.address + '{/CENTER}');
-  lines.push('{CENTER}' + biz.phone + '{/CENTER}');
-  lines.push('================================');
-
-  lines.push(`Bill #${bill.bill_number || order.order_number}`);
-  lines.push(date.toLocaleDateString() + '  ' + date.toLocaleTimeString());
-  lines.push('--------------------------------');
-
-  if (order.items) {
-    for (const item of order.items) {
-      lines.push(item.product_name + ' x' + item.quantity);
-      const addons = parseAddons(item.addons);
-      if (addons.length > 0) {
-        for (const addon of addons) {
-          lines.push('  + ' + addon.name);
-        }
-      }
-      if (item.special_instructions) {
-        lines.push('  ** ' + item.special_instructions);
-      }
-    }
-  }
-
-  lines.push('================================');
-  lines.push('Subtotal' + rightAlign(formatCurrency(bill.subtotal)));
-  if (bill.discount_amount > 0) {
-    lines.push('Discount' + rightAlign('-' + formatCurrency(bill.discount_amount)));
-  }
-  lines.push('Tax' + rightAlign(formatCurrency(bill.tax_amount)));
-  lines.push('{BOLD}TOTAL' + rightAlign(formatCurrency(bill.total)) + '{/BOLD}');
-
-  if (bill.payment_details) {
-    lines.push('--------------------------------');
-    try {
-      const payments = typeof bill.payment_details === 'string' ? JSON.parse(bill.payment_details) : bill.payment_details;
-      for (const payment of payments) {
-        lines.push(payment.method + rightAlign(formatCurrency(payment.amount)));
-      }
-    } catch {}
-  }
-
-  lines.push('================================');
-  lines.push('{CENTER}Thank you!{/CENTER}');
-  lines.push('{CENTER}Please visit again{/CENTER}');
-  lines.push('{FEED}{FEED}{FEED}{CUT}');
-
-  return buildEscPos(lines);
-}
-
-function formatClassicReceipt(order: any, bill: any, biz: any): Buffer {
-  const lines: string[] = [];
-  const currency = '₹';
-  const date = new Date(order.created_at);
-
-  lines.push('{INIT}');
-  lines.push('{CENTER}{BOLD}' + biz.name + '{/BOLD}{/CENTER}');
-  if (biz.address) lines.push('{CENTER}' + biz.address + '{/CENTER}');
-  if (biz.phone) lines.push('{CENTER}Ph: ' + biz.phone + '{/CENTER}');
-  lines.push('================================');
-
+  lines.push('{CENTER}{BOLD}' + (biz.name || 'Store') + '{/BOLD}{/CENTER}');
+  lines.push(bar);
   lines.push('Bill #: ' + (bill.bill_number || order.order_number));
-  lines.push('Date: ' + date.toLocaleDateString() + ' Time: ' + date.toLocaleTimeString());
-  lines.push('--------------------------------');
-  lines.push('Item                  Qty  Rate    Amt');
-  lines.push('--------------------------------');
+  lines.push('Date: ' + date.toLocaleDateString() + ' ' + date.toLocaleTimeString());
+  lines.push(dash);
+  lines.push('Item' + ' '.repeat(itemNameLen - 4 + 5) + 'Qty  Tax   Amount');
+  lines.push(dash);
 
   if (order.items) {
     for (const item of order.items) {
-      const name = truncate(item.product_name, 18);
-      const qty = String(item.quantity).padEnd(4);
-      const rate = formatCurrency(item.unit_price).padStart(7);
-      const amt = formatCurrency(item.total).padStart(7);
-      lines.push(name + qty + rate + amt);
+      const name = truncate(item.product_name, itemNameLen);
+      const qty = String(item.quantity).padEnd(5);
+      const taxRate = getTaxRate(item);
+      const taxStr = taxRate > 0 ? (taxRate + '%').padEnd(5) : '     ';
+      const amt = formatCurrency(item.total);
+      lines.push(name + qty + taxStr + rightAlign(amt, amtLen));
 
       const addons = parseAddons(item.addons);
       for (const addon of addons) {
-        lines.push('  + ' + truncate(addon.name, 16));
+        const addonName = truncate('  + ' + addon.name, itemNameLen + 4);
+        const addonPrice = addon.price ? formatCurrency(addon.price) : '';
+        lines.push(addonName + rightAlign(addonPrice, cols - itemNameLen - 8));
       }
       if (item.special_instructions) {
-        lines.push('  ** ' + truncate(item.special_instructions, 16));
+        lines.push('  Note: ' + truncate(item.special_instructions, cols - 8));
       }
     }
   }
 
-  lines.push('================================');
-  lines.push('Subtotal' + rightAlign(formatCurrency(bill.subtotal)));
+  lines.push(dash);
+  lines.push('Subtotal' + rightAlign(formatCurrency(bill.subtotal), cols - 8));
   if (bill.discount_amount > 0) {
-    lines.push('Discount' + rightAlign('-' + formatCurrency(bill.discount_amount)));
+    lines.push('Discount' + rightAlign('-' + formatCurrency(bill.discount_amount), cols - 8));
   }
-  lines.push('Tax' + rightAlign(formatCurrency(bill.tax_amount)));
-  lines.push('================================');
-  lines.push('{BOLD}TOTAL' + rightAlign(formatCurrency(bill.total)) + '{/BOLD}');
+  lines.push('Tax' + rightAlign(formatCurrency(bill.tax_amount), cols - 3));
+  lines.push('{BOLD}TOTAL' + rightAlign(formatCurrency(bill.total), cols - 5) + '{/BOLD}');
 
   if (bill.payment_details) {
-    lines.push('--------------------------------');
+    lines.push(dash);
     try {
       const payments = typeof bill.payment_details === 'string' ? JSON.parse(bill.payment_details) : bill.payment_details;
-      for (const payment of payments) {
-        lines.push(payment.method + rightAlign(formatCurrency(payment.amount)));
+      if (payments && Array.isArray(payments)) {
+        for (const payment of payments) {
+          if (payment && payment.method) {
+            lines.push(payment.method + rightAlign(formatCurrency(payment.amount), cols - payment.method.length));
+          }
+        }
       }
     } catch {}
   }
 
-  lines.push('================================');
+  lines.push(bar);
+  if (biz.address) lines.push(biz.address);
+  if (biz.phone) lines.push('Ph: ' + biz.phone);
   if (biz.gstin) lines.push('GSTIN: ' + biz.gstin);
   lines.push('{CENTER}Thank you!{/CENTER}');
-  lines.push('{FEED}{FEED}{FEED}{CUT}');
+  lines.push('{CUT}');
 
   return buildEscPos(lines);
 }
 
-function formatDetailedReceipt(order: any, bill: any, biz: any): Buffer {
+function formatClassicReceipt(order: any, bill: any, biz: any, cols: number = 48): Buffer {
   const lines: string[] = [];
-  const currency = '₹';
   const date = new Date(order.created_at);
+  
+  const bar = '='.repeat(cols);
+  const dash = '-'.repeat(cols);
+  
+  const itemNameLen = cols === 42 ? 22 : 28;
 
   lines.push('{INIT}');
-  lines.push('{CENTER}{BOLD}' + biz.name.toUpperCase() + '{/BOLD}{/CENTER}');
-  if (biz.address) lines.push('{CENTER}' + biz.address + '{/CENTER}');
-  if (biz.gstin) lines.push('{CENTER}GSTIN: ' + biz.gstin + '{/CENTER}');
-  lines.push('{CENTER}{BOLD}TAX INVOICE{/BOLD}{/CENTER}');
-  lines.push('================================');
-
-  lines.push('Invoice #: ' + (bill.bill_number || order.order_number));
-  lines.push('Date: ' + date.toLocaleDateString());
-  lines.push('Time: ' + date.toLocaleTimeString());
-  lines.push('--------------------------------');
-  lines.push('{BOLD}Item            Qty    Rate    Amt{/BOLD}');
-  lines.push('--------------------------------');
+  lines.push('{CENTER}{BOLD}' + (biz.name || 'Store') + '{/BOLD}{/CENTER}');
+  lines.push(bar);
+  lines.push('Bill #: ' + (bill.bill_number || order.order_number));
+  lines.push('Date: ' + date.toLocaleDateString() + ' ' + date.toLocaleTimeString());
+  lines.push(dash);
+  lines.push('Item' + ' '.repeat(itemNameLen - 4 + 5) + 'Qty  Tax   Amount');
+  lines.push(dash);
 
   if (order.items) {
     for (const item of order.items) {
-      const name = truncate(item.product_name, 14);
+      const name = truncate(item.product_name, itemNameLen);
       const qty = String(item.quantity).padEnd(5);
-      const rate = formatCurrency(item.unit_price).padStart(8);
-      const amt = formatCurrency(item.total).padStart(8);
-      lines.push(name + qty + rate + amt);
+      const taxRate = getTaxRate(item);
+      const taxStr = taxRate > 0 ? (taxRate + '%').padEnd(5) : '     ';
+      const amt = formatCurrency(item.total);
+      lines.push(name + qty + taxStr + rightAlign(amt, 10));
 
+      const addons = parseAddons(item.addons);
+      for (const addon of addons) {
+        const addonName = truncate('  + ' + addon.name, itemNameLen + 4);
+        const addonPrice = addon.price ? formatCurrency(addon.price) : '';
+        lines.push(addonName + rightAlign(addonPrice, cols - itemNameLen - 8));
+      }
       if (item.special_instructions) {
-        lines.push('  NOTE: ' + truncate(item.special_instructions, 20));
+        lines.push('  Note: ' + truncate(item.special_instructions, cols - 8));
       }
     }
   }
 
-  lines.push('--------------------------------');
-  lines.push('Subtotal (excl)' + rightAlign(formatCurrency(bill.subtotal)));
+  lines.push(dash);
+  lines.push('Subtotal' + rightAlign(formatCurrency(bill.subtotal), cols - 8));
+  if (bill.discount_amount > 0) {
+    lines.push('Discount' + rightAlign('-' + formatCurrency(bill.discount_amount), cols - 8));
+  }
+  lines.push('Tax' + rightAlign(formatCurrency(bill.tax_amount), cols - 3));
+  lines.push('{BOLD}TOTAL' + rightAlign(formatCurrency(bill.total), cols - 5) + '{/BOLD}');
+
+  if (bill.payment_details) {
+    lines.push(dash);
+    try {
+      const payments = typeof bill.payment_details === 'string' ? JSON.parse(bill.payment_details) : bill.payment_details;
+      if (payments && Array.isArray(payments)) {
+        for (const payment of payments) {
+          if (payment && payment.method) {
+            lines.push(payment.method + rightAlign(formatCurrency(payment.amount), cols - payment.method.length));
+          }
+        }
+      }
+    } catch {}
+  }
+
+  lines.push(bar);
+  if (biz.address) lines.push(biz.address);
+  if (biz.phone) lines.push('Ph: ' + biz.phone);
+  if (biz.gstin) lines.push('GSTIN: ' + biz.gstin);
+  lines.push('{CENTER}Thank you!{/CENTER}');
+  lines.push('{CUT}');
+
+  return buildEscPos(lines);
+}
+
+function formatDetailedReceipt(order: any, bill: any, biz: any, cols: number = 48): Buffer {
+  const lines: string[] = [];
+  const date = new Date(order.created_at);
+  
+  const bar = '='.repeat(cols);
+  const dash = '-'.repeat(cols);
+  
+  const itemNameLen = cols === 42 ? 22 : 28;
+
+  lines.push('{INIT}');
+  lines.push('{CENTER}{BOLD}' + (biz.name || 'Store').toUpperCase() + '{/BOLD}{/CENTER}');
+  lines.push(bar);
+  lines.push('{CENTER}TAX INVOICE{/CENTER}');
+  lines.push(bar);
+  lines.push('Invoice #: ' + (bill.bill_number || order.order_number));
+  lines.push('Date: ' + date.toLocaleDateString());
+  lines.push('Time: ' + date.toLocaleTimeString());
+  lines.push(dash);
+  lines.push('Item' + ' '.repeat(itemNameLen - 4 + 5) + 'Qty  Tax   Amount');
+  lines.push(dash);
+
+  if (order.items) {
+    for (const item of order.items) {
+      const name = truncate(item.product_name, itemNameLen);
+      const qty = String(item.quantity).padEnd(5);
+      const taxRate = getTaxRate(item);
+      const taxStr = taxRate > 0 ? (taxRate + '%').padEnd(5) : '     ';
+      const amt = formatCurrency(item.total);
+      lines.push(name + qty + taxStr + rightAlign(amt, 10));
+
+      const addons = parseAddons(item.addons);
+      for (const addon of addons) {
+        const addonName = truncate('  + ' + addon.name, itemNameLen + 4);
+        const addonPrice = addon.price ? formatCurrency(addon.price) : '';
+        lines.push(addonName + rightAlign(addonPrice, cols - itemNameLen - 8));
+      }
+      if (item.special_instructions) {
+        lines.push('  Note: ' + truncate(item.special_instructions, cols - 8));
+      }
+    }
+  }
+
+  lines.push(dash);
+  lines.push('Subtotal' + rightAlign(formatCurrency(bill.subtotal), cols - 8));
+  if (bill.discount_amount > 0) {
+    lines.push('Discount' + rightAlign('-' + formatCurrency(bill.discount_amount), cols - 8));
+  }
 
   if (bill.tax_breakdown) {
     try {
@@ -514,42 +567,40 @@ function formatDetailedReceipt(order: any, bill: any, biz: any): Buffer {
       if (Array.isArray(taxBreakdown) && taxBreakdown.length > 0) {
         for (const tax of taxBreakdown) {
           if (tax.amount > 0) {
-            lines.push(tax.name + ' @' + tax.rate + '%' + rightAlign(formatCurrency(tax.amount)));
+            lines.push((tax.name || 'Tax') + ' @' + tax.rate + '%' + rightAlign(formatCurrency(tax.amount), cols - 16));
           }
         }
       }
-    } catch {}
+    } catch {
+      lines.push('Tax' + rightAlign(formatCurrency(bill.tax_amount), cols - 3));
+    }
   } else {
-    lines.push('CGST' + rightAlign(formatCurrency(bill.tax_amount / 2)));
-    lines.push('SGST' + rightAlign(formatCurrency(bill.tax_amount / 2)));
+    lines.push('Tax' + rightAlign(formatCurrency(bill.tax_amount), cols - 3));
   }
 
-  if (bill.discount_amount > 0) {
-    lines.push('Discount' + rightAlign('-' + formatCurrency(bill.discount_amount)));
-  }
-  lines.push('================================');
-  lines.push('{BOLD}GRAND TOTAL' + rightAlign(formatCurrency(bill.total)) + '{/BOLD}');
+  lines.push(bar);
+  lines.push('{BOLD}GRAND TOTAL' + rightAlign(formatCurrency(bill.total), cols - 12) + '{/BOLD}');
 
   if (bill.payment_details) {
-    lines.push('--------------------------------');
+    lines.push(dash);
     try {
       const payments = typeof bill.payment_details === 'string' ? JSON.parse(bill.payment_details) : bill.payment_details;
-      for (const payment of payments) {
-        lines.push(payment.method + rightAlign(formatCurrency(payment.amount)));
-        if (payment.method.toLowerCase() === 'cash') {
-          const balance = payment.amount - bill.total;
-          if (balance > 0) {
-            lines.push('Change' + rightAlign(formatCurrency(balance)));
+      if (payments && Array.isArray(payments)) {
+        for (const payment of payments) {
+          if (payment && payment.method) {
+            lines.push(payment.method + rightAlign(formatCurrency(payment.amount), cols - payment.method.length));
           }
         }
       }
     } catch {}
   }
 
-  lines.push('================================');
+  lines.push(bar);
+  if (biz.address) lines.push('Address: ' + biz.address);
+  if (biz.phone) lines.push('Phone: ' + biz.phone);
+  if (biz.gstin) lines.push('GSTIN: ' + biz.gstin);
   lines.push('{CENTER}Thank you for your business!{/CENTER}');
-  lines.push('{CENTER}Please visit again{/CENTER}');
-  lines.push('{FEED}{FEED}{FEED}{CUT}');
+  lines.push('{CUT}');
 
   return buildEscPos(lines);
 }
@@ -557,7 +608,10 @@ function formatDetailedReceipt(order: any, bill: any, biz: any): Buffer {
 function parseAddons(addons: any): any[] {
   if (!addons) return [];
   if (typeof addons === 'string') {
-    try { return JSON.parse(addons); } catch { return []; }
+    try {
+      const parsed = JSON.parse(addons);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch { return []; }
   }
   return Array.isArray(addons) ? addons : [];
 }
@@ -566,47 +620,60 @@ function formatCurrency(amount: number): string {
   return '₹' + (Number(amount) || 0).toFixed(2);
 }
 
-function rightAlign(text: string): string {
-  const width = 24;
+function rightAlign(text: string, width: number = 24): string {
   return ' '.repeat(Math.max(1, width - text.length)) + text;
+}
+
+function getTaxRate(item: any): number {
+  if (item.tax_rate !== undefined && item.tax_rate !== null) return Number(item.tax_rate);
+  if (item.tax_type && item.tax_type !== 'none') {
+    const match = item.tax_type.match(/(\d+)/);
+    if (match) return parseInt(match[1]);
+  }
+  if (item.unit_price && item.tax_amount) {
+    const rate = (item.tax_amount / item.unit_price / item.quantity) * 100;
+    return Math.round(rate);
+  }
+  return 0;
 }
 
 function truncate(text: string, length: number): string {
   return text.length > length ? text.substring(0, length - 2) + '..' : text;
 }
 
-function formatKOT(order: any, items: any[], stationName: string): Buffer {
+function formatKOT(order: any, items: any[], stationName: string, cols: number = 48): Buffer {
   const lines: string[] = [];
+  const bar = '='.repeat(cols);
 
   lines.push('{INIT}');
-  lines.push('{CENTER}{BOLD}{DOUBLE_HEIGHT}Kitchen Order Ticket{/DOUBLE_HEIGHT}{/BOLD}{/CENTER}');
+  lines.push('{CENTER}{BOLD}KITCHEN ORDER TICKET{/BOLD}{/CENTER}');
   lines.push('');
-  lines.push(`Station: ${stationName}`);
-  lines.push(`Order: ${order.order_number}`);
+  lines.push('Station: ' + stationName);
+  lines.push('Order: ' + order.order_number);
   if (order.table) {
-    lines.push(`Table: ${order.table.name}`);
+    lines.push('Table: ' + order.table.name);
   }
-  lines.push(`Time: ${new Date(order.created_at).toLocaleTimeString()}`);
-  lines.push('================================');
+  lines.push('Time: ' + new Date(order.created_at).toLocaleTimeString());
+  lines.push(bar);
   lines.push('');
 
   for (const item of items) {
-    lines.push(`{BOLD}{DOUBLE_WIDTH}${item.quantity}x   ${item.product_name}{/DOUBLE_WIDTH}{/BOLD}`);
+    lines.push('{DOUBLE_HEIGHT}{BOLD}' + item.quantity + 'x  ' + item.product_name + '{/BOLD}{/DOUBLE_HEIGHT}');
     if (item.special_instructions) {
-      lines.push(`{BOLD}** ${item.special_instructions} **{/BOLD}`);
+      lines.push('  ** ' + item.special_instructions + ' **');
     }
   }
 
   lines.push('');
-  lines.push('================================');
-  lines.push('{FEED}{FEED}{CUT}');
+  lines.push(bar);
+  lines.push('{CUT}');
 
   return buildEscPos(lines);
 }
 
 export function buildTestPage(paperWidth: string = '80mm'): Buffer {
-  const width = paperWidth === '58mm' ? 32 : 48;
-  const bar = '-'.repeat(width);
+  const width = paperWidth === '58mm' ? 42 : 48;
+  const bar = '='.repeat(width);
   const lines = [
     '{INIT}',
     '{CENTER}{BOLD}Flo Printer Test{/BOLD}{/CENTER}',
@@ -621,53 +688,33 @@ export function buildTestPage(paperWidth: string = '80mm'): Buffer {
     bar,
     '{CENTER}If you can read this, your printer is working!{/CENTER}',
     bar,
-    '{FEED}{CUT}',
+    '{CUT}',
   ];
   return buildEscPos(lines);
 }
 
 function buildEscPos(lines: string[]): Buffer {
   const buf: number[] = [];
-  let doubleHeight = false;
-  let doubleWidth = false;
-  let bold = false;
-  let alignment = 0;
 
-  const resetStyles = () => {
-    if (doubleHeight) { buf.push(0x1B, 0x21, alignment === 1 ? 0x10 : (bold ? 0x08 : 0x00)); doubleHeight = false; }
-    if (doubleWidth) { buf.push(0x1B, 0x21, alignment === 1 ? 0x20 : (bold ? 0x08 : 0x00)); doubleWidth = false; }
-    if (bold) { buf.push(0x1B, 0x45, 0x00); bold = false; }
-  };
-
-  const applyStyles = (lineBold: boolean, lineDH: boolean, lineDW: boolean) => {
-    if (lineBold && !bold) { buf.push(0x1B, 0x45, 0x01); bold = true; }
-    let mode = 0;
-    if (lineDH) mode |= 0x10;
-    if (lineDW) mode |= 0x20;
-    if (lineBold) mode |= 0x08;
-    if (mode > 0) {
-      buf.push(0x1B, 0x21, mode);
-    }
-    doubleHeight = lineDH;
-    doubleWidth = lineDW;
+  const resetAllStyles = () => {
+    buf.push(0x1B, 0x45, 0x00);
+    buf.push(0x1B, 0x21, 0x00);
+    buf.push(0x1B, 0x61, 0x00);
   };
 
   for (let line of lines) {
     if (line.includes('{INIT}')) {
       buf.push(0x1B, 0x40);
-      buf.push(0x1B, 0x61, 0x00);
-      resetStyles();
+      resetAllStyles();
       continue;
     }
 
     if (line.includes('{FEED}')) {
-      resetStyles();
-      buf.push(0x1B, 0x64, 0x03);
+      buf.push(0x1B, 0x64, 0x05);
       continue;
     }
 
     if (line.includes('{CUT}')) {
-      resetStyles();
       buf.push(0x1B, 0x64, 0x05);
       buf.push(0x1D, 0x56, 0x00);
       continue;
@@ -683,13 +730,22 @@ function buildEscPos(lines: string[]): Buffer {
     line = line.replace(/\{DOUBLE_HEIGHT\}/g, '').replace(/\{\/DOUBLE_HEIGHT\}/g, '');
     line = line.replace(/\{DOUBLE_WIDTH\}/g, '').replace(/\{\/DOUBLE_WIDTH\}/g, '');
 
-    if (center) {
-      buf.push(0x1B, 0x61, 0x01);
+    buf.push(0x1B, 0x61, center ? 0x01 : 0x00);
+
+    if (lineBold || lineDH || lineDW) {
+      let mode = 0;
+      if (lineDH) mode |= 0x10;
+      if (lineDW) mode |= 0x20;
+      if (lineBold) mode |= 0x08;
+      buf.push(0x1B, 0x21, mode);
     } else {
-      buf.push(0x1B, 0x61, 0x00);
+      buf.push(0x1B, 0x21, 0x00);
     }
 
-    applyStyles(lineBold, lineDH, lineDW);
+    if (lineBold) {
+      buf.push(0x1B, 0x45, 0x01);
+    }
+
     buf.push(...Buffer.from(line, 'utf8'));
     buf.push(0x0A);
   }
