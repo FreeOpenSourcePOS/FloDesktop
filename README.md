@@ -183,8 +183,7 @@ Flo Desktop uses **SQLite** for local storage:
 
 | Project | Description | Tech |
 |---------|-------------|------|
-| **[FloPOS](https://github.com/FreeOpenSourcePOS/FloPOS)** | Full-featured SaaS POS | Laravel + Next.js |
-| **[Flo KDS](https://github.com/FreeOpenSourcePOS/FloKDS)** | Standalone Kitchen Display | React |
+| **[FloPOS](https://github.com/FreeOpenSourcePOS/FloPOS)** | Full-featured cloud POS with multi-tenancy | Laravel + Next.js (SaaS) |
 
 ## 🤝 Contributing
 
