@@ -104,13 +104,54 @@ function runMigrations(): void {
   const currentVersion = getCurrentSchemaVersion();
   console.log(`[DB] Schema version: ${currentVersion} → ${SCHEMA_VERSION}`);
 
-  if (currentVersion < SCHEMA_VERSION) {
-    dropAllTables();
+  if (currentVersion === 0) {
+    // Fresh install - create everything
     createSchema();
     seedData();
+  } else if (currentVersion < SCHEMA_VERSION) {
+    // Incremental migrations
+    runIncrementalMigrations(currentVersion);
   }
 
   console.log('[DB] Migrations complete');
+}
+
+function runIncrementalMigrations(fromVersion: number): void {
+  const insert = (key: string, value: string) =>
+    db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)').run(key, value);
+
+  // Migration from version 7 to 8
+  if (fromVersion < 8) {
+    console.log('[DB] Running migration to v8...');
+    
+    // Add printers table if it doesn't exist
+    db.exec(`CREATE TABLE IF NOT EXISTS printers (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      connection_type TEXT NOT NULL CHECK (connection_type IN ('network', 'usb', 'webusb')),
+      ip_address TEXT,
+      port INTEGER DEFAULT 9100,
+      usb_device_path TEXT,
+      is_default INTEGER DEFAULT 0,
+      paper_width TEXT DEFAULT '80mm',
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )`);
+
+    // Add default printer if none exists
+    const existingPrinter = db.prepare('SELECT COUNT(*) as count FROM printers').get() as any;
+    if (!existingPrinter || existingPrinter.count === 0) {
+      db.prepare(`
+        INSERT INTO printers (id, name, connection_type, paper_width, is_default)
+        VALUES (?, ?, ?, ?, ?)
+      `).run('printer-1', 'Thermal Printer', 'usb', '80mm', 1);
+      console.log('[DB] Added default printer');
+    }
+  }
+
+  // Update schema version
+  insert('schema_version', String(SCHEMA_VERSION));
+  console.log('[DB] Incremental migration complete');
 }
 
 function createSchema(): void {
