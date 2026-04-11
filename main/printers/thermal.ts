@@ -386,7 +386,7 @@ function formatCompactReceipt(order: any, bill: any, biz: any, cols: number = 48
   lines.push('Bill #: ' + (bill.bill_number || order.order_number));
   lines.push('Date: ' + date.toLocaleDateString() + ' ' + date.toLocaleTimeString());
   lines.push(dash);
-  lines.push('Item' + ' '.repeat(itemNameLen - 4 + 5) + 'Qty  Tax   Amount');
+  lines.push('Item' + ' '.repeat(itemNameLen) + 'Qty    Amount');
   lines.push(dash);
 
   if (order.items) {
@@ -457,7 +457,7 @@ function formatClassicReceipt(order: any, bill: any, biz: any, cols: number = 48
   lines.push('Bill #: ' + (bill.bill_number || order.order_number));
   lines.push('Date: ' + date.toLocaleDateString() + ' ' + date.toLocaleTimeString());
   lines.push(dash);
-  lines.push('Item' + ' '.repeat(itemNameLen - 4 + 5) + 'Qty  Tax   Amount');
+  lines.push('Item' + ' '.repeat(itemNameLen) + 'Qty    Amount');
   lines.push(dash);
 
   if (order.items) {
@@ -531,7 +531,7 @@ function formatDetailedReceipt(order: any, bill: any, biz: any, cols: number = 4
   lines.push('Date: ' + date.toLocaleDateString());
   lines.push('Time: ' + date.toLocaleTimeString());
   lines.push(dash);
-  lines.push('Item' + ' '.repeat(itemNameLen - 4 + 5) + 'Qty  Tax   Amount');
+  lines.push('Item' + ' '.repeat(itemNameLen) + 'Qty    Amount');
   lines.push(dash);
 
   if (order.items) {

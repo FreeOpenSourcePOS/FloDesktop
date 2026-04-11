@@ -9,13 +9,12 @@
     "build": "tsc",
     "build:frontend": "cd frontend && npm ci && NEXT_BUILD_MODE=desktop NEXT_PUBLIC_API_URL=http://localhost:3001/api npm run build",
     "build:all-platforms": "npm run build:frontend && npm run build && electron-builder --win --mac --linux",
-    "postinstall": "electron-builder install-app-deps",
+    "postinstall": "git submodule update --init --recursive",
     "build:win": "npm run build:frontend && npm run build && electron-builder --win",
     "build:mac": "npm run build:frontend && npm run build && electron-builder --mac",
     "build:linux": "npm run build:frontend && npm run build && electron-builder --linux",
     "pack": "electron-builder --dir",
     "start": "electron .",
-    "postinstall": "git submodule update --init --recursive",
     "rebuild": "HOME=~/.electron-gyp node-gyp rebuild --target=$(node -p \"require('./node_modules/electron/package.json').version\") --arch=$(node -p \"process.arch\") --dist-url=https://electronjs.org/headers --runtime=electron --directory node_modules/better-sqlite3"
   },
   "author": {

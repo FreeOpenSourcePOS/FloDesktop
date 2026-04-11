@@ -428,6 +428,12 @@ function seedData(): void {
     VALUES (?, ?, ?, ?, ?)
   `).run('user-3', 'Kitchen Manager', 'kitchen@flo.local', chefPassword, 'manager');
 
+  // Default printer (will be detected on first run)
+  db.prepare(`
+    INSERT OR IGNORE INTO printers (id, name, connection_type, paper_width, is_default)
+    VALUES (?, ?, ?, ?, ?)
+  `).run('printer-1', 'Thermal Printer', 'usb', '80mm', 1);
+
   // Sample categories
   const cats = [
     ['cat-1', 'Food',      '#FF6B6B', '🍔', 1],
