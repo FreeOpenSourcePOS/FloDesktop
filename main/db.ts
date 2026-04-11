@@ -9,7 +9,7 @@ const SCHEMA_VERSION = 8;
 
 let db: Database.Database;
 
-function getDbPath(): string {
+export function getDbPath(): string {
   const userDataPath = app.isPackaged ? app.getPath('userData') : path.join(__dirname, '../../');
   return path.join(userDataPath, 'flo.db');
 }
