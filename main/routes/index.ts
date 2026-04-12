@@ -16,6 +16,7 @@ import { reportRoutes } from './reports';
 import { kdsRoutes } from './kds';
 import { kdsInfoRoutes } from './kds-info';
 import { printerRoutes } from './printers';
+import { databaseRoutes } from './database';
 import { getDatabase, now, parseItemJson } from '../db';
 
 export function registerRoutes(app: Express): void {
@@ -40,6 +41,7 @@ export function registerRoutes(app: Express): void {
   app.use('/api/kds', kdsRoutes);
   app.use('/api/kds-info', kdsInfoRoutes);
   app.use('/api/printers', printerRoutes);
+  app.use('/api/db', databaseRoutes);
 
   // Tax preview
   app.post('/api/tax/preview', async (req, res) => {

@@ -1,15 +1,34 @@
-import { ipcMain, dialog, app, BrowserWindow } from 'electron';
+import { ipcMain, dialog, app, BrowserWindow, shell } from 'electron';
 import * as path from 'path';
-import { getDatabase, createBackup, restoreBackup, now } from './db';
+import { getDatabase, createBackup, restoreBackup, now, getDbPath } from './db';
 import { getLocalIP } from './server';
 
 export function registerIpcHandlers(): void {
   // Database backup/restore
   ipcMain.handle('backup-database', async () => {
     try {
-      const backupPath = createBackup();
-      return { success: true, path: backupPath };
+      console.log('[IPC] backup-database: Starting...');
+      
+      // Ask user where to save
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const result = await dialog.showSaveDialog({
+        defaultPath: `flo-backup-${timestamp}.db`,
+        filters: [{ name: 'SQLite Database', extensions: ['db'] }],
+      });
+
+      if (result.canceled || !result.filePath) {
+        return { success: false, error: 'Cancelled' };
+      }
+
+      // Copy to user-selected location
+      const fs = require('fs');
+      const dbPath = getDbPath();
+      fs.copyFileSync(dbPath, result.filePath);
+      
+      console.log('[IPC] backup-database: Complete:', result.filePath);
+      return { success: true, path: result.filePath };
     } catch (error: any) {
+      console.error('[IPC] backup-database: Error:', error);
       return { success: false, error: error.message };
     }
   });

@@ -49,10 +49,12 @@ export function closeDatabase(): void {
   }
 }
 
-export function createBackup(): string {
+export async function createBackup(): Promise<string> {
+  console.log('[DB] createBackup: Starting...');
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
   const backupPath = path.join(getBackupDir(), `flo-backup-${timestamp}.db`);
-  db.backup(backupPath);
+  console.log('[DB] createBackup: Target path:', backupPath);
+  await db.backup(backupPath);
   console.log(`[DB] Backup created: ${backupPath}`);
   return backupPath;
 }

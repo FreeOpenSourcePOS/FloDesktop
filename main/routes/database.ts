@@ -38,7 +38,7 @@ router.get('/export', (req: Request, res: Response) => {
   }
 });
 
-router.post('/import', (req: Request, res: Response) => {
+router.post('/import', async (req: Request, res: Response) => {
   try {
     const { data, overwrite } = req.body;
 
@@ -61,7 +61,7 @@ router.post('/import', (req: Request, res: Response) => {
     }
 
     // Create backup before import
-    const backupPath = createBackup();
+    const backupPath = await createBackup();
 
     if (overwrite) {
       // Clear existing data and import fresh
@@ -129,9 +129,9 @@ router.post('/import', (req: Request, res: Response) => {
   }
 });
 
-router.get('/backup', (req: Request, res: Response) => {
+router.get('/backup', async (req: Request, res: Response) => {
   try {
-    const backupPath = createBackup();
+    const backupPath = await createBackup();
     res.json({ 
       success: true, 
       path: backupPath,
