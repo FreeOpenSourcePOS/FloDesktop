@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { getDatabase, now, parseItemJson } from '../db';
+import { getDatabase, now, parseItemJson, withTxn } from '../db';
 import { notifyKdsUpdate } from '../services/kds';
 
 const router = Router();
@@ -60,29 +60,30 @@ router.patch('/:orderId/items/:itemId/cancel', (req: Request, res: Response) => 
       return res.status(404).json({ error: 'Item not found in this order' });
     }
 
-    // Soft delete - mark as cancelled
-    db.prepare("UPDATE order_items SET status = 'cancelled', updated_at = ? WHERE id = ?")
-      .run(now(), itemId);
+    const { updatedOrder, items } = withTxn(() => {
+      db.prepare("UPDATE order_items SET status = 'cancelled', updated_at = ? WHERE id = ?")
+        .run(now(), itemId);
 
-    // Recalculate order totals excluding cancelled items
-    const activeItems = db.prepare("SELECT * FROM order_items WHERE order_id = ? AND status != 'cancelled'")
-      .all(orderId) as any[];
-    let subtotal = 0;
-    let totalTax = 0;
-    for (const i of activeItems) {
-      subtotal += i.subtotal || 0;
-      totalTax += i.tax_amount || 0;
-    }
-    const preRoundTotal = subtotal + totalTax + ((order as any).packaging_charge || 0);
-    const roundOff = Math.round(preRoundTotal) - preRoundTotal;
-    const total = Math.round(preRoundTotal) + roundOff;
+      const activeItems = db.prepare("SELECT * FROM order_items WHERE order_id = ? AND status != 'cancelled'")
+        .all(orderId) as any[];
+      let subtotal = 0;
+      let totalTax = 0;
+      for (const i of activeItems) {
+        subtotal += i.subtotal || 0;
+        totalTax += i.tax_amount || 0;
+      }
+      const preRoundTotal = subtotal + totalTax + ((order as any).packaging_charge || 0);
+      const roundOff = Math.round(preRoundTotal) - preRoundTotal;
+      const total = Math.round(preRoundTotal) + roundOff;
 
-    db.prepare(`
-      UPDATE orders SET subtotal = ?, tax_amount = ?, total = ?, round_off = ?, updated_at = ? WHERE id = ?
-    `).run(subtotal, totalTax, total, roundOff, now(), orderId);
+      db.prepare(`
+        UPDATE orders SET subtotal = ?, tax_amount = ?, total = ?, round_off = ?, updated_at = ? WHERE id = ?
+      `).run(subtotal, totalTax, total, roundOff, now(), orderId);
 
-    const updatedOrder = db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId) as any;
-    const items = db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(orderId).map(parseItemJson);
+      const updatedOrder = db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId) as any;
+      const items = db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(orderId).map(parseItemJson);
+      return { updatedOrder, items };
+    });
 
     res.json({ order: { ...updatedOrder, items } });
   } catch (error: any) {
@@ -112,29 +113,30 @@ router.patch('/:orderId/items/:itemId/restore', (req: Request, res: Response) =>
       return res.status(404).json({ error: 'Item not found in this order' });
     }
 
-    // Restore - mark as pending
-    db.prepare("UPDATE order_items SET status = 'pending', updated_at = ? WHERE id = ?")
-      .run(now(), itemId);
+    const { updatedOrder, items } = withTxn(() => {
+      db.prepare("UPDATE order_items SET status = 'pending', updated_at = ? WHERE id = ?")
+        .run(now(), itemId);
 
-    // Recalculate order totals
-    const activeItems = db.prepare("SELECT * FROM order_items WHERE order_id = ? AND status != 'cancelled'")
-      .all(orderId) as any[];
-    let subtotal = 0;
-    let totalTax = 0;
-    for (const i of activeItems) {
-      subtotal += i.subtotal || 0;
-      totalTax += i.tax_amount || 0;
-    }
-    const preRoundTotal = subtotal + totalTax + ((order as any).packaging_charge || 0);
-    const roundOff = Math.round(preRoundTotal) - preRoundTotal;
-    const total = Math.round(preRoundTotal) + roundOff;
+      const activeItems = db.prepare("SELECT * FROM order_items WHERE order_id = ? AND status != 'cancelled'")
+        .all(orderId) as any[];
+      let subtotal = 0;
+      let totalTax = 0;
+      for (const i of activeItems) {
+        subtotal += i.subtotal || 0;
+        totalTax += i.tax_amount || 0;
+      }
+      const preRoundTotal = subtotal + totalTax + ((order as any).packaging_charge || 0);
+      const roundOff = Math.round(preRoundTotal) - preRoundTotal;
+      const total = Math.round(preRoundTotal) + roundOff;
 
-    db.prepare(`
-      UPDATE orders SET subtotal = ?, tax_amount = ?, total = ?, round_off = ?, updated_at = ? WHERE id = ?
-    `).run(subtotal, totalTax, total, roundOff, now(), orderId);
+      db.prepare(`
+        UPDATE orders SET subtotal = ?, tax_amount = ?, total = ?, round_off = ?, updated_at = ? WHERE id = ?
+      `).run(subtotal, totalTax, total, roundOff, now(), orderId);
 
-    const updatedOrder = db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId) as any;
-    const items = db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(orderId).map(parseItemJson);
+      const updatedOrder = db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId) as any;
+      const items = db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(orderId).map(parseItemJson);
+      return { updatedOrder, items };
+    });
 
     res.json({ order: { ...updatedOrder, items } });
   } catch (error: any) {

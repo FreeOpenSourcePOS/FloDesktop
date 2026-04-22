@@ -138,8 +138,9 @@ function createWindow(): void {
 
   mainWindow.once('ready-to-show', () => {
     mainWindow?.show();
-    // Open DevTools to debug logo issue
-    mainWindow?.webContents.openDevTools();
+    if (isDev) {
+      mainWindow?.webContents.openDevTools();
+    }
   });
 
   // Always load from the embedded Express server (serves static Next.js export).

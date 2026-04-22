@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { getDatabase, now } from '../db';
+import { getDatabase, now, withTxn } from '../db';
 import { randomUUID } from 'crypto';
 
 const router = Router();
@@ -45,23 +45,26 @@ router.post('/', (req: Request, res: Response) => {
 
     const db = getDatabase();
     const groupId = randomUUID();
-    db.prepare(`
-      INSERT INTO addon_groups (id, name, description, is_required, min_selection, max_selection, sort_order, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      groupId, name, description || null, is_required ? 1 : 0, min_selection || 0, max_selection || 1, sort_order || 0, now(), now()
-    );
+    const { group, groupAddons } = withTxn(() => {
+      db.prepare(`
+        INSERT INTO addon_groups (id, name, description, is_required, min_selection, max_selection, sort_order, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        groupId, name, description || null, is_required ? 1 : 0, min_selection || 0, max_selection || 1, sort_order || 0, now(), now()
+      );
 
-    // Insert addons if provided
-    if (addons && addons.length > 0) {
-      const insertAddon = db.prepare('INSERT INTO addons (id, addon_group_id, name, price, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)');
-      addons.forEach((addon: any, index: number) => {
-        insertAddon.run(randomUUID(), groupId, addon.name, addon.price || 0, index, now(), now());
-      });
-    }
+      if (addons && addons.length > 0) {
+        const insertAddon = db.prepare('INSERT INTO addons (id, addon_group_id, name, price, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)');
+        addons.forEach((addon: any, index: number) => {
+          insertAddon.run(randomUUID(), groupId, addon.name, addon.price || 0, index, now(), now());
+        });
+      }
 
-    const group = db.prepare('SELECT * FROM addon_groups WHERE id = ?').get(groupId);
-    const groupAddons = db.prepare('SELECT * FROM addons WHERE addon_group_id = ?').all(groupId);
+      return {
+        group: db.prepare('SELECT * FROM addon_groups WHERE id = ?').get(groupId),
+        groupAddons: db.prepare('SELECT * FROM addons WHERE addon_group_id = ?').all(groupId),
+      };
+    });
 
     res.status(201).json({ addon_group: Object.assign({}, group, { addons: groupAddons }) });
   } catch (error: any) {
@@ -104,9 +107,11 @@ router.delete('/:id', (req: Request, res: Response) => {
       return res.status(404).json({ error: 'Addon group not found' });
     }
 
-    db.prepare('DELETE FROM addons WHERE addon_group_id = ?').run(req.params.id);
-    db.prepare('DELETE FROM addon_group_product WHERE addon_group_id = ?').run(req.params.id);
-    db.prepare('DELETE FROM addon_groups WHERE id = ?').run(req.params.id);
+    withTxn(() => {
+      db.prepare('DELETE FROM addons WHERE addon_group_id = ?').run(req.params.id);
+      db.prepare('DELETE FROM addon_group_product WHERE addon_group_id = ?').run(req.params.id);
+      db.prepare('DELETE FROM addon_groups WHERE id = ?').run(req.params.id);
+    });
 
     res.json({ message: 'Addon group deleted' });
   } catch (error: any) {

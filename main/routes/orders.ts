@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { getDatabase, generateOrderNumber, now, parseItemJson } from '../db';
+import { getDatabase, generateOrderNumber, now, parseItemJson, withTxn } from '../db';
 import { calculateItemTax } from '../services/tax';
 import { notifyKdsUpdate } from '../services/kds';
 
@@ -98,101 +98,95 @@ router.post('/', (req: Request, res: Response) => {
       state_code: settings.state_code || '',
     };
 
-    // Create order
-    const orderResult = db.prepare(`
-      INSERT INTO orders (order_number, table_id, customer_id, user_id, type, guest_count, special_instructions,
-        packaging_charge, status, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
-    `).run(orderNumber, table_id || null, customer_id || null, user_id || null, type, guest_count || null,
-      special_instructions || null, packaging_charge || 0, now(), now());
+    const { order, orderItems } = withTxn(() => {
+      const orderResult = db.prepare(`
+        INSERT INTO orders (order_number, table_id, customer_id, user_id, type, guest_count, special_instructions,
+          packaging_charge, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+      `).run(orderNumber, table_id || null, customer_id || null, user_id || null, type, guest_count || null,
+        special_instructions || null, packaging_charge || 0, now(), now());
 
-    const orderId = orderResult.lastInsertRowid;
+      const orderId = orderResult.lastInsertRowid;
 
-    // Insert items
-    let subtotal = 0;
-    let totalTax = 0;
-    const allTaxBreakdowns: any[] = [];
+      let subtotal = 0;
+      let totalTax = 0;
+      const allTaxBreakdowns: any[] = [];
 
-    const insertItem = db.prepare(`
-      INSERT INTO order_items (order_id, product_id, product_name, product_sku, unit_price, quantity,
-        subtotal, tax_amount, tax_breakdown, tax_type, discount_amount, total, variant_selection,
-        modifier_selection, addons, special_instructions, status, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
-    `);
+      const insertItem = db.prepare(`
+        INSERT INTO order_items (order_id, product_id, product_name, product_sku, unit_price, quantity,
+          subtotal, tax_amount, tax_breakdown, tax_type, discount_amount, total, variant_selection,
+          modifier_selection, addons, special_instructions, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+      `);
 
-    for (const item of items) {
-      const product = db.prepare('SELECT * FROM products WHERE id = ?').get(item.product_id) as any;
-      if (!product) {
-        throw new Error(`Product ${item.product_id} not found`);
-      }
+      for (const item of items) {
+        const product = db.prepare('SELECT * FROM products WHERE id = ?').get(item.product_id) as any;
+        if (!product) {
+          throw new Error(`Product ${item.product_id} not found`);
+        }
 
-      // Check stock
-      if (product.track_inventory && product.stock_quantity < item.quantity) {
-        throw new Error(`Insufficient stock for ${product.name}`);
-      }
+        if (product.track_inventory && product.stock_quantity < item.quantity) {
+          throw new Error(`Insufficient stock for ${product.name}`);
+        }
 
-      const unitPrice = parseFloat(product.price);
-      const quantity = item.quantity;
-      const itemDiscount = item.discount_amount || 0;
+        const unitPrice = parseFloat(product.price);
+        const quantity = item.quantity;
+        const itemDiscount = item.discount_amount || 0;
 
-      let itemSubtotal = unitPrice * quantity;
-      if (item.addons) {
-        for (const addon of item.addons) {
-          itemSubtotal += (addon.price || 0) * quantity;
+        let itemSubtotal = unitPrice * quantity;
+        if (item.addons) {
+          for (const addon of item.addons) {
+            itemSubtotal += (addon.price || 0) * quantity;
+          }
+        }
+        itemSubtotal = Math.max(0, itemSubtotal - itemDiscount);
+
+        const customer = customer_id ? db.prepare('SELECT * FROM customers WHERE id = ?').get(customer_id) as any : null;
+        const taxResult = calculateItemTax(tenantInfo, product, itemSubtotal, customer);
+
+        totalTax += taxResult.tax_amount;
+        if (taxResult.tax_breakdown) {
+          allTaxBreakdowns.push(taxResult.tax_breakdown);
+        }
+
+        const itemTotal = itemSubtotal + taxResult.tax_amount;
+        subtotal += itemSubtotal;
+
+        insertItem.run(
+          orderId, product.id, product.name, product.sku, unitPrice, quantity,
+          itemSubtotal, taxResult.tax_amount, JSON.stringify(taxResult.tax_breakdown),
+          product.tax_type, itemDiscount, itemTotal,
+          JSON.stringify(item.variant_selection || null),
+          JSON.stringify(item.modifier_selection || null),
+          JSON.stringify(item.addons || null),
+          item.special_instructions || null, now(), now()
+        );
+
+        if (product.track_inventory) {
+          db.prepare('UPDATE products SET stock_quantity = stock_quantity - ?, updated_at = ? WHERE id = ?')
+            .run(quantity, now(), product.id);
         }
       }
-      itemSubtotal = Math.max(0, itemSubtotal - itemDiscount);
 
-      // Calculate tax
-      const customer = customer_id ? db.prepare('SELECT * FROM customers WHERE id = ?').get(customer_id) as any : null;
-      const taxResult = calculateItemTax(tenantInfo, product, itemSubtotal, customer);
+      const preRoundTotal = subtotal + totalTax + (packaging_charge || 0);
+      const roundOff = Math.round(preRoundTotal) - preRoundTotal;
+      const total = Math.round(preRoundTotal) + roundOff;
 
-      totalTax += taxResult.tax_amount;
-      if (taxResult.tax_breakdown) {
-        allTaxBreakdowns.push(taxResult.tax_breakdown);
+      db.prepare(`
+        UPDATE orders SET subtotal = ?, tax_amount = ?, tax_breakdown = ?, total = ?,
+          round_off = ?, updated_at = ? WHERE id = ?
+      `).run(subtotal, totalTax, JSON.stringify(allTaxBreakdowns), total, roundOff, now(), orderId);
+
+      if (table_id && type === 'dine_in') {
+        db.prepare("UPDATE tables SET status = 'occupied', updated_at = ? WHERE id = ?").run(now(), table_id);
       }
 
-      const itemTotal = itemSubtotal + taxResult.tax_amount;
-      subtotal += itemSubtotal;
-
-      insertItem.run(
-        orderId, product.id, product.name, product.sku, unitPrice, quantity,
-        itemSubtotal, taxResult.tax_amount, JSON.stringify(taxResult.tax_breakdown),
-        product.tax_type, itemDiscount, itemTotal,
-        JSON.stringify(item.variant_selection || null),
-        JSON.stringify(item.modifier_selection || null),
-        JSON.stringify(item.addons || null),
-        item.special_instructions || null, now(), now()
-      );
-
-      // Decrease stock
-      if (product.track_inventory) {
-        db.prepare('UPDATE products SET stock_quantity = stock_quantity - ?, updated_at = ? WHERE id = ?')
-          .run(quantity, now(), product.id);
-      }
-    }
-
-    // Calculate round off
-    const preRoundTotal = subtotal + totalTax + (packaging_charge || 0);
-    const roundOff = Math.round(preRoundTotal) - preRoundTotal;
-    const total = Math.round(preRoundTotal) + roundOff;
-
-    // Update order totals
-    db.prepare(`
-      UPDATE orders SET subtotal = ?, tax_amount = ?, tax_breakdown = ?, total = ?,
-        round_off = ?, updated_at = ? WHERE id = ?
-    `).run(subtotal, totalTax, JSON.stringify(allTaxBreakdowns), total, roundOff, now(), orderId);
-
-    // Mark table as occupied
-    if (table_id && type === 'dine_in') {
-      db.prepare("UPDATE tables SET status = 'occupied', updated_at = ? WHERE id = ?").run(now(), table_id);
-    }
-
-    const order = db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId) as any;
-    const orderItems = db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(orderId).map(parseItemJson);
+      const order = db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId) as any;
+      const orderItems = db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(orderId).map(parseItemJson);
+      return { order, orderItems };
+    });
 
     notifyKdsUpdate();
-
     res.status(201).json({ order: Object.assign({}, order, { items: orderItems }) });
   } catch (error: any) {
     console.error('[Orders] Create error:', error);
@@ -231,73 +225,74 @@ router.post('/:id/items', (req: Request, res: Response) => {
 
     const customer = (order as any).customer_id ? db.prepare('SELECT * FROM customers WHERE id = ?').get((order as any).customer_id) as any : null;
 
-    const insertItem = db.prepare(`
-      INSERT INTO order_items (order_id, product_id, product_name, product_sku, unit_price, quantity,
-        subtotal, tax_amount, tax_breakdown, tax_type, discount_amount, total, variant_selection,
-        modifier_selection, addons, special_instructions, status, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
-    `);
+    const { updatedOrder, updatedItems } = withTxn(() => {
+      const insertItem = db.prepare(`
+        INSERT INTO order_items (order_id, product_id, product_name, product_sku, unit_price, quantity,
+          subtotal, tax_amount, tax_breakdown, tax_type, discount_amount, total, variant_selection,
+          modifier_selection, addons, special_instructions, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+      `);
 
-    for (const item of items) {
-      const product = db.prepare('SELECT * FROM products WHERE id = ?').get(item.product_id) as any;
-      if (!product) {
-        throw new Error(`Product ${item.product_id} not found`);
-      }
+      for (const item of items) {
+        const product = db.prepare('SELECT * FROM products WHERE id = ?').get(item.product_id) as any;
+        if (!product) {
+          throw new Error(`Product ${item.product_id} not found`);
+        }
+        if (product.track_inventory && product.stock_quantity < item.quantity) {
+          throw new Error(`Insufficient stock for ${product.name}`);
+        }
 
-      if (product.track_inventory && product.stock_quantity < item.quantity) {
-        throw new Error(`Insufficient stock for ${product.name}`);
-      }
+        const unitPrice = parseFloat(product.price);
+        const quantity = item.quantity;
+        const itemDiscount = item.discount_amount || 0;
 
-      const unitPrice = parseFloat(product.price);
-      const quantity = item.quantity;
-      const itemDiscount = item.discount_amount || 0;
+        let itemSubtotal = unitPrice * quantity;
+        if (item.addons) {
+          for (const addon of item.addons) {
+            itemSubtotal += (addon.price || 0) * quantity;
+          }
+        }
+        itemSubtotal = Math.max(0, itemSubtotal - itemDiscount);
 
-      let itemSubtotal = unitPrice * quantity;
-      if (item.addons) {
-        for (const addon of item.addons) {
-          itemSubtotal += (addon.price || 0) * quantity;
+        const taxResult = calculateItemTax(tenantInfo, product, itemSubtotal, customer);
+        const itemTotal = itemSubtotal + taxResult.tax_amount;
+
+        insertItem.run(
+          req.params.id, product.id, product.name, product.sku, unitPrice, quantity,
+          itemSubtotal, taxResult.tax_amount, JSON.stringify(taxResult.tax_breakdown),
+          product.tax_type, itemDiscount, itemTotal,
+          JSON.stringify(item.variant_selection || null),
+          JSON.stringify(item.modifier_selection || null),
+          JSON.stringify(item.addons || null),
+          item.special_instructions || null, now(), now()
+        );
+
+        if (product.track_inventory) {
+          db.prepare('UPDATE products SET stock_quantity = stock_quantity - ?, updated_at = ? WHERE id = ?')
+            .run(quantity, now(), product.id);
         }
       }
-      itemSubtotal = Math.max(0, itemSubtotal - itemDiscount);
 
-      const taxResult = calculateItemTax(tenantInfo, product, itemSubtotal, customer);
-      const itemTotal = itemSubtotal + taxResult.tax_amount;
-
-      insertItem.run(
-        req.params.id, product.id, product.name, product.sku, unitPrice, quantity,
-        itemSubtotal, taxResult.tax_amount, JSON.stringify(taxResult.tax_breakdown),
-        product.tax_type, itemDiscount, itemTotal,
-        JSON.stringify(item.variant_selection || null),
-        JSON.stringify(item.modifier_selection || null),
-        JSON.stringify(item.addons || null),
-        item.special_instructions || null, now(), now()
-      );
-
-      if (product.track_inventory) {
-        db.prepare('UPDATE products SET stock_quantity = stock_quantity - ?, updated_at = ? WHERE id = ?')
-          .run(quantity, now(), product.id);
+      const orderItems = db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(req.params.id) as any[];
+      let subtotal = 0;
+      let totalTax = 0;
+      for (const item of orderItems) {
+        subtotal += item.subtotal;
+        totalTax += item.tax_amount;
       }
-    }
 
-    // Recalculate order totals
-    const orderItems = db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(req.params.id) as any[];
-    let subtotal = 0;
-    let totalTax = 0;
-    for (const item of orderItems) {
-      subtotal += item.subtotal;
-      totalTax += item.tax_amount;
-    }
+      const preRoundTotal = subtotal + totalTax + ((order as any).packaging_charge || 0);
+      const roundOff = Math.round(preRoundTotal) - preRoundTotal;
+      const total = Math.round(preRoundTotal) + roundOff;
 
-    const preRoundTotal = subtotal + totalTax + ((order as any).packaging_charge || 0);
-    const roundOff = Math.round(preRoundTotal) - preRoundTotal;
-    const total = Math.round(preRoundTotal) + roundOff;
+      db.prepare(`
+        UPDATE orders SET subtotal = ?, tax_amount = ?, total = ?, round_off = ?, updated_at = ? WHERE id = ?
+      `).run(subtotal, totalTax, total, roundOff, now(), req.params.id);
 
-    db.prepare(`
-      UPDATE orders SET subtotal = ?, tax_amount = ?, total = ?, round_off = ?, updated_at = ? WHERE id = ?
-    `).run(subtotal, totalTax, total, roundOff, now(), req.params.id);
-
-    const updatedOrder = db.prepare('SELECT * FROM orders WHERE id = ?').get(req.params.id) as any;
-    const updatedItems = db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(req.params.id).map(parseItemJson);
+      const updatedOrder = db.prepare('SELECT * FROM orders WHERE id = ?').get(req.params.id) as any;
+      const updatedItems = db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(req.params.id).map(parseItemJson);
+      return { updatedOrder, updatedItems };
+    });
 
     res.json({ order: Object.assign({}, updatedOrder, { items: updatedItems }) });
   } catch (error: any) {
@@ -328,56 +323,61 @@ router.patch('/:id/status', (req: Request, res: Response) => {
 
     const nowStr = now();
 
-    switch (status) {
-      case 'preparing':
-        db.prepare('UPDATE orders SET status = ?, cooking_started_at = ?, updated_at = ? WHERE id = ?')
-          .run(status, nowStr, nowStr, req.params.id);
-        break;
+    const { updatedOrder, orderItems, table } = withTxn(() => {
+      switch (status) {
+        case 'preparing':
+          db.prepare('UPDATE orders SET status = ?, cooking_started_at = ?, updated_at = ? WHERE id = ?')
+            .run(status, nowStr, nowStr, req.params.id);
+          break;
 
-      case 'ready':
-        db.prepare('UPDATE orders SET status = ?, ready_at = ?, updated_at = ? WHERE id = ?')
-          .run(status, nowStr, nowStr, req.params.id);
-        break;
+        case 'ready':
+          db.prepare('UPDATE orders SET status = ?, ready_at = ?, updated_at = ? WHERE id = ?')
+            .run(status, nowStr, nowStr, req.params.id);
+          break;
 
-      case 'served':
-        db.prepare('UPDATE orders SET status = ?, served_at = ?, updated_at = ? WHERE id = ?')
-          .run(status, nowStr, nowStr, req.params.id);
-        break;
+        case 'served':
+          db.prepare('UPDATE orders SET status = ?, served_at = ?, updated_at = ? WHERE id = ?')
+            .run(status, nowStr, nowStr, req.params.id);
+          break;
 
-      case 'completed':
-        db.prepare('UPDATE orders SET status = ?, completed_at = ?, updated_at = ? WHERE id = ?')
-          .run(status, nowStr, nowStr, req.params.id);
-        // Free table
-        if ((order as any).table_id) {
-          db.prepare("UPDATE tables SET status = 'available', updated_at = ? WHERE id = ?")
-            .run(nowStr, (order as any).table_id);
-        }
-        break;
-
-      case 'cancelled':
-        // Restore stock
-        const items = db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(req.params.id) as any[];
-        for (const item of items) {
-          const product = db.prepare('SELECT * FROM products WHERE id = ?').get(item.product_id) as any;
-          if (product && product.track_inventory) {
-            db.prepare('UPDATE products SET stock_quantity = stock_quantity + ?, updated_at = ? WHERE id = ?')
-              .run(item.quantity, nowStr, product.id);
+        case 'completed':
+          db.prepare('UPDATE orders SET status = ?, completed_at = ?, updated_at = ? WHERE id = ?')
+            .run(status, nowStr, nowStr, req.params.id);
+          db.prepare(`
+            UPDATE order_items SET status = 'served', updated_at = ?
+            WHERE order_id = ? AND status IN ('pending', 'preparing', 'ready')
+          `).run(nowStr, req.params.id);
+          if ((order as any).table_id) {
+            db.prepare("UPDATE tables SET status = 'available', updated_at = ? WHERE id = ?")
+              .run(nowStr, (order as any).table_id);
           }
-        }
-        db.prepare('UPDATE orders SET status = ?, cancelled_at = ?, cancellation_reason = ?, updated_at = ? WHERE id = ?')
-          .run(status, nowStr, reason, nowStr, req.params.id);
-        // Free table
-        if ((order as any).table_id) {
-          db.prepare("UPDATE tables SET status = 'available', updated_at = ? WHERE id = ?")
-            .run(nowStr, (order as any).table_id);
-        }
-        break;
-    }
+          break;
 
-    const updatedOrder = db.prepare('SELECT * FROM orders WHERE id = ?').get(req.params.id) as any;
-    const orderItems = db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(req.params.id).map(parseItemJson);
-    const tableRow2 = updatedOrder.table_id ? db.prepare('SELECT * FROM tables WHERE id = ?').get(updatedOrder.table_id) as any : null;
-    const table = tableRow2 ? { ...tableRow2, name: tableRow2.number } : null;
+        case 'cancelled': {
+          const items = db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(req.params.id) as any[];
+          for (const item of items) {
+            const product = db.prepare('SELECT * FROM products WHERE id = ?').get(item.product_id) as any;
+            if (product && product.track_inventory) {
+              db.prepare('UPDATE products SET stock_quantity = stock_quantity + ?, updated_at = ? WHERE id = ?')
+                .run(item.quantity, nowStr, product.id);
+            }
+          }
+          db.prepare('UPDATE orders SET status = ?, cancelled_at = ?, cancellation_reason = ?, updated_at = ? WHERE id = ?')
+            .run(status, nowStr, reason, nowStr, req.params.id);
+          if ((order as any).table_id) {
+            db.prepare("UPDATE tables SET status = 'available', updated_at = ? WHERE id = ?")
+              .run(nowStr, (order as any).table_id);
+          }
+          break;
+        }
+      }
+
+      const updatedOrder = db.prepare('SELECT * FROM orders WHERE id = ?').get(req.params.id) as any;
+      const orderItems = db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(req.params.id).map(parseItemJson);
+      const tableRow2 = updatedOrder.table_id ? db.prepare('SELECT * FROM tables WHERE id = ?').get(updatedOrder.table_id) as any : null;
+      const table = tableRow2 ? { ...tableRow2, name: tableRow2.number } : null;
+      return { updatedOrder, orderItems, table };
+    });
 
     res.json({ order: Object.assign({}, updatedOrder, { items: orderItems, table }) });
   } catch (error: any) {

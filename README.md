@@ -21,13 +21,13 @@ Flo Desktop is a **free, open-source, offline-first Point of Sale (POS) system**
 
 | Platform | File | Description |
 |----------|------|-------------|
-| **macOS (Intel)** | `Flo-1.5.1.dmg` | For Intel Macs |
-| **macOS (Apple Silicon)** | `Flo-1.5.1-arm64.dmg` | For M1/M2/M3 Macs |
-| **Windows** | `Flo Setup 1.5.1.exe` | Windows installer |
-| **Linux (AppImage)** | `Flo-1.5.1.AppImage` | Portable Linux binary |
-| **Linux (Debian)** | `flo-desktop_1.5.1_amd64.deb` | Debian/Ubuntu package |
+| **macOS (Intel)** | `Flo-1.5.5.dmg` | For Intel Macs |
+| **macOS (Apple Silicon)** | `Flo-1.5.5-arm64.dmg` | For M1/M2/M3 Macs |
+| **Windows** | `Flo Setup 1.5.5.exe` | Windows installer |
+| **Linux (AppImage)** | `Flo-1.5.5.AppImage` | Portable Linux binary |
+| **Linux (Debian)** | `flo-desktop_1.5.5_amd64.deb` | Debian/Ubuntu package |
 
-**Latest Version:** v1.5.1
+**Latest Version:** v1.5.5
 
 ## 🚀 Features
 
@@ -129,10 +129,10 @@ npm install
 npm run dev
 
 # Build for production
-npm run build:mac    # macOS
-npm run build:win    # Windows
-npm run build:linux  # Linux
-npm run build:all    # All platforms
+npm run build:mac            # macOS
+npm run build:win            # Windows
+npm run build:linux          # Linux
+npm run build:all-platforms  # All platforms
 ```
 
 ### Environment Variables

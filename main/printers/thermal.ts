@@ -347,7 +347,7 @@ function getPrinterConfig(): any {
   return db.prepare('SELECT * FROM printers WHERE is_default = 1').get();
 }
 
-function formatReceipt(order: any, bill: any, business?: any, template?: string, cols: number = 48): Buffer {
+export function formatReceipt(order: any, bill: any, business?: any, template?: string, cols: number = 48): Buffer {
   console.log('[Printer] formatReceipt - template:', template);
   console.log('[Printer] formatReceipt - order:', order?.order_number, 'bill:', bill?.bill_number);
   console.log('[Printer] formatReceipt - items count:', order?.items?.length || 0, 'cols:', cols);
@@ -373,12 +373,12 @@ function formatReceipt(order: any, bill: any, business?: any, template?: string,
 function formatCompactReceipt(order: any, bill: any, biz: any, cols: number = 48): Buffer {
   const lines: string[] = [];
   const date = new Date(order.created_at);
-  
+
   const bar = '='.repeat(cols);
   const dash = '-'.repeat(cols);
-  
+
   const itemNameLen = cols === 42 ? 22 : 28;
-  const amtLen = cols === 42 ? 10 : 10;
+  const amtLen = 10;
 
   lines.push('{INIT}');
   lines.push('{CENTER}{BOLD}' + (biz.name || 'Store') + '{/BOLD}{/CENTER}');
@@ -386,23 +386,16 @@ function formatCompactReceipt(order: any, bill: any, biz: any, cols: number = 48
   lines.push('Bill #: ' + (bill.bill_number || order.order_number));
   lines.push('Date: ' + date.toLocaleDateString() + ' ' + date.toLocaleTimeString());
   lines.push(dash);
-  lines.push('Item' + ' '.repeat(itemNameLen) + 'Qty    Amount');
+  lines.push(itemHeader(itemNameLen, amtLen, cols));
   lines.push(dash);
 
   if (order.items) {
     for (const item of order.items) {
-      const name = truncate(item.product_name, itemNameLen);
-      const qty = String(item.quantity).padEnd(5);
-      const taxRate = getTaxRate(item);
-      const taxStr = taxRate > 0 ? (taxRate + '%').padEnd(5) : '     ';
-      const amt = formatCurrency(item.total);
-      lines.push(name + qty + taxStr + rightAlign(amt, amtLen));
+      lines.push(itemRow(item, itemNameLen, amtLen, cols));
 
       const addons = parseAddons(item.addons);
       for (const addon of addons) {
-        const addonName = truncate('  + ' + addon.name, itemNameLen + 4);
-        const addonPrice = addon.price ? formatCurrency(addon.price) : '';
-        lines.push(addonName + rightAlign(addonPrice, cols - itemNameLen - 8));
+        lines.push(addonRow(addon, itemNameLen, amtLen, cols));
       }
       if (item.special_instructions) {
         lines.push('  Note: ' + truncate(item.special_instructions, cols - 8));
@@ -445,11 +438,12 @@ function formatCompactReceipt(order: any, bill: any, biz: any, cols: number = 48
 function formatClassicReceipt(order: any, bill: any, biz: any, cols: number = 48): Buffer {
   const lines: string[] = [];
   const date = new Date(order.created_at);
-  
+
   const bar = '='.repeat(cols);
   const dash = '-'.repeat(cols);
-  
+
   const itemNameLen = cols === 42 ? 22 : 28;
+  const amtLen = 10;
 
   lines.push('{INIT}');
   lines.push('{CENTER}{BOLD}' + (biz.name || 'Store') + '{/BOLD}{/CENTER}');
@@ -457,23 +451,16 @@ function formatClassicReceipt(order: any, bill: any, biz: any, cols: number = 48
   lines.push('Bill #: ' + (bill.bill_number || order.order_number));
   lines.push('Date: ' + date.toLocaleDateString() + ' ' + date.toLocaleTimeString());
   lines.push(dash);
-  lines.push('Item' + ' '.repeat(itemNameLen) + 'Qty    Amount');
+  lines.push(itemHeader(itemNameLen, amtLen, cols));
   lines.push(dash);
 
   if (order.items) {
     for (const item of order.items) {
-      const name = truncate(item.product_name, itemNameLen);
-      const qty = String(item.quantity).padEnd(5);
-      const taxRate = getTaxRate(item);
-      const taxStr = taxRate > 0 ? (taxRate + '%').padEnd(5) : '     ';
-      const amt = formatCurrency(item.total);
-      lines.push(name + qty + taxStr + rightAlign(amt, 10));
+      lines.push(itemRow(item, itemNameLen, amtLen, cols));
 
       const addons = parseAddons(item.addons);
       for (const addon of addons) {
-        const addonName = truncate('  + ' + addon.name, itemNameLen + 4);
-        const addonPrice = addon.price ? formatCurrency(addon.price) : '';
-        lines.push(addonName + rightAlign(addonPrice, cols - itemNameLen - 8));
+        lines.push(addonRow(addon, itemNameLen, amtLen, cols));
       }
       if (item.special_instructions) {
         lines.push('  Note: ' + truncate(item.special_instructions, cols - 8));
@@ -531,23 +518,16 @@ function formatDetailedReceipt(order: any, bill: any, biz: any, cols: number = 4
   lines.push('Date: ' + date.toLocaleDateString());
   lines.push('Time: ' + date.toLocaleTimeString());
   lines.push(dash);
-  lines.push('Item' + ' '.repeat(itemNameLen) + 'Qty    Amount');
+  lines.push(itemHeader(itemNameLen, 10, cols));
   lines.push(dash);
 
   if (order.items) {
     for (const item of order.items) {
-      const name = truncate(item.product_name, itemNameLen);
-      const qty = String(item.quantity).padEnd(5);
-      const taxRate = getTaxRate(item);
-      const taxStr = taxRate > 0 ? (taxRate + '%').padEnd(5) : '     ';
-      const amt = formatCurrency(item.total);
-      lines.push(name + qty + taxStr + rightAlign(amt, 10));
+      lines.push(itemRow(item, itemNameLen, 10, cols));
 
       const addons = parseAddons(item.addons);
       for (const addon of addons) {
-        const addonName = truncate('  + ' + addon.name, itemNameLen + 4);
-        const addonPrice = addon.price ? formatCurrency(addon.price) : '';
-        lines.push(addonName + rightAlign(addonPrice, cols - itemNameLen - 8));
+        lines.push(addonRow(addon, itemNameLen, 10, cols));
       }
       if (item.special_instructions) {
         lines.push('  Note: ' + truncate(item.special_instructions, cols - 8));
@@ -605,6 +585,38 @@ function formatDetailedReceipt(order: any, bill: any, biz: any, cols: number = 4
   return buildEscPos(lines);
 }
 
+// Item row layout: [ name (nameLen) ][ qty (4) ][ tax (5) ][ amount right-aligned (amtLen) ]
+// All four segments sum to `cols`, so columns line up between header and rows.
+function itemHeader(nameLen: number, amtLen: number, cols: number): string {
+  const qtyW = 4;
+  const taxW = cols - nameLen - qtyW - amtLen;
+  return (
+    'Item'.padEnd(nameLen) +
+    'Qty'.padEnd(qtyW) +
+    'Tax'.padEnd(taxW) +
+    rightAlign('Amount', amtLen)
+  );
+}
+
+function itemRow(item: any, nameLen: number, amtLen: number, cols: number): string {
+  const qtyW = 4;
+  const taxW = cols - nameLen - qtyW - amtLen;
+  const name = truncate(item.product_name, nameLen).padEnd(nameLen);
+  const qty = String(item.quantity).padEnd(qtyW);
+  const taxRate = getTaxRate(item);
+  const taxStr = (taxRate > 0 ? taxRate + '%' : '').padEnd(taxW);
+  const amt = rightAlign(formatCurrency(item.total), amtLen);
+  return name + qty + taxStr + amt;
+}
+
+function addonRow(addon: any, nameLen: number, amtLen: number, cols: number): string {
+  const midW = cols - nameLen - amtLen;
+  const label = truncate('  + ' + addon.name, nameLen).padEnd(nameLen);
+  const spacer = ' '.repeat(Math.max(0, midW));
+  const price = addon.price ? rightAlign(formatCurrency(addon.price), amtLen) : ' '.repeat(amtLen);
+  return label + spacer + price;
+}
+
 function parseAddons(addons: any): any[] {
   if (!addons) return [];
   if (typeof addons === 'string') {
@@ -641,7 +653,7 @@ function truncate(text: string, length: number): string {
   return text.length > length ? text.substring(0, length - 2) + '..' : text;
 }
 
-function formatKOT(order: any, items: any[], stationName: string, cols: number = 48): Buffer {
+export function formatKOT(order: any, items: any[], stationName: string, cols: number = 48): Buffer {
   const lines: string[] = [];
   const bar = '='.repeat(cols);
 
@@ -693,7 +705,7 @@ export function buildTestPage(paperWidth: string = '80mm'): Buffer {
   return buildEscPos(lines);
 }
 
-function buildEscPos(lines: string[]): Buffer {
+export function buildEscPos(lines: string[]): Buffer {
   const buf: number[] = [];
 
   const resetAllStyles = () => {

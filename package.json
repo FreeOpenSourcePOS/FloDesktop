@@ -1,6 +1,6 @@
 {
   "name": "flo-desktop",
-  "version": "1.5.5",
+  "version": "1.5.6",
   "description": "Flo - Self-hosted Point of Sale System",
   "main": "dist/index.js",
   "scripts": {
@@ -15,7 +15,12 @@
     "build:linux": "npm run build:frontend && npm run build && electron-builder --linux",
     "pack": "electron-builder --dir",
     "start": "electron .",
-    "rebuild": "HOME=~/.electron-gyp node-gyp rebuild --target=$(node -p \"require('./node_modules/electron/package.json').version\") --arch=$(node -p \"process.arch\") --dist-url=https://electronjs.org/headers --runtime=electron --directory node_modules/better-sqlite3"
+    "rebuild": "HOME=~/.electron-gyp node-gyp rebuild --target=$(node -p \"require('./node_modules/electron/package.json').version\") --arch=$(node -p \"process.arch\") --dist-url=https://electronjs.org/headers --runtime=electron --directory node_modules/better-sqlite3",
+    "test": "npm run test:backup && npm run test:printer && npm run test:db-audit",
+    "test:backup": "npx -y ts-node --transpile-only -P tests/tsconfig.json tests/backup-restore.test.ts",
+    "test:printer": "npx -y ts-node --transpile-only -P tests/tsconfig.json tests/printer.test.ts",
+    "test:db-audit": "npx -y ts-node --transpile-only -P tests/tsconfig.json tests/db-audit.test.ts",
+    "repair:payments": "npx -y ts-node --transpile-only -P tests/tsconfig.json tests/repair-payment-details.ts"
   },
   "author": {
     "name": "Flo",

@@ -5,7 +5,7 @@ import * as fs from 'fs';
 import * as bcrypt from 'bcryptjs';
 
 // Bump this whenever the schema changes incompatibly
-const SCHEMA_VERSION = 8;
+export const SCHEMA_VERSION = 8;
 
 let db: Database.Database;
 
@@ -30,11 +30,103 @@ export function initDatabase(): void {
   console.log(`[DB] Opening database at: ${dbPath}`);
   db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
+  db.pragma('synchronous = NORMAL');
+  db.pragma('busy_timeout = 5000');
   db.pragma('foreign_keys = OFF'); // Off during migrations
 
   runMigrations();
 
   db.pragma('foreign_keys = ON');
+
+  runStartupIntegrityCheck();
+  autoRepairPaymentDetails();
+}
+
+/** Atomic multi-statement mutation. Use for anything touching >1 row or >1 table. */
+export function withTxn<T>(fn: () => T): T {
+  return db.transaction(fn)();
+}
+
+/** Safely append an object to a JSON-array column. Creates the array if missing/invalid. */
+export function appendJsonArray(table: string, idColumn: string, idValue: any, column: string, value: any): void {
+  const row = db.prepare(`SELECT ${column} AS v FROM ${table} WHERE ${idColumn} = ?`).get(idValue) as any;
+  let arr: any[] = [];
+  if (row && row.v) {
+    try {
+      const parsed = JSON.parse(row.v);
+      arr = Array.isArray(parsed) ? parsed : [parsed];
+    } catch {
+      arr = [];
+    }
+  }
+  arr.push(value);
+  db.prepare(`UPDATE ${table} SET ${column} = ? WHERE ${idColumn} = ?`).run(JSON.stringify(arr), idValue);
+}
+
+/** Runs on every startup. Logs loud warnings but never throws — DB stays available even if dirty. */
+function runStartupIntegrityCheck(): void {
+  try {
+    const integrity = db.prepare('PRAGMA integrity_check').all() as { integrity_check: string }[];
+    const bad = integrity.filter((r) => r.integrity_check !== 'ok');
+    if (bad.length > 0) {
+      console.error('[DB] ⚠ integrity_check reported issues:', bad.map((r) => r.integrity_check).join('; '));
+    } else {
+      console.log('[DB] integrity_check: ok');
+    }
+
+    const fkViolations = db.prepare('PRAGMA foreign_key_check').all() as any[];
+    if (fkViolations.length > 0) {
+      console.error(`[DB] ⚠ ${fkViolations.length} foreign-key violation(s):`, fkViolations.slice(0, 5));
+    } else {
+      console.log('[DB] foreign_key_check: clean');
+    }
+  } catch (err: any) {
+    console.error('[DB] Startup integrity check failed:', err.message);
+  }
+}
+
+/** Idempotent auto-repair for the pre-fix payment_details corruption: `{A},{A}` → `[A]`.
+ *  Only runs when rows are detected as malformed AND the deduped sum matches `paid_amount`. */
+function autoRepairPaymentDetails(): void {
+  try {
+    const rows = db.prepare(`SELECT id, payment_details, paid_amount FROM bills WHERE payment_details IS NOT NULL AND payment_details != ''`).all() as any[];
+    const toFix: { id: number; value: string }[] = [];
+
+    for (const row of rows) {
+      try { JSON.parse(row.payment_details); continue; } catch {}
+
+      const wrapped = '[' + String(row.payment_details).replace(/\}\s*,\s*\{/g, '},{') + ']';
+      let parsed: any[];
+      try { parsed = JSON.parse(wrapped); } catch { continue; }
+      if (!Array.isArray(parsed)) continue;
+
+      const deduped: any[] = [];
+      for (const p of parsed) {
+        const prev = deduped[deduped.length - 1];
+        if (prev && prev.method === p.method && prev.amount === p.amount && prev.timestamp === p.timestamp) continue;
+        deduped.push(p);
+      }
+
+      const dedupedSum = deduped.reduce((s, p) => s + (Number(p.amount) || 0), 0);
+      const rawSum = parsed.reduce((s, p) => s + (Number(p.amount) || 0), 0);
+      const chosen = Math.abs(dedupedSum - row.paid_amount) <= 0.02 ? deduped
+                    : Math.abs(rawSum - row.paid_amount) <= 0.02 ? parsed : null;
+      if (!chosen) continue;
+
+      toFix.push({ id: row.id, value: JSON.stringify(chosen) });
+    }
+
+    if (toFix.length === 0) return;
+
+    const stmt = db.prepare(`UPDATE bills SET payment_details = ?, updated_at = datetime('now') WHERE id = ?`);
+    const tx = db.transaction((rows: { id: number; value: string }[]) => {
+      for (const r of rows) stmt.run(r.value, r.id);
+    });
+    tx(toFix);
+    console.log(`[DB] auto-repaired payment_details on ${toFix.length} bill(s)`);
+  } catch (err: any) {
+    console.error('[DB] autoRepairPaymentDetails failed:', err.message);
+  }
 }
 
 export function getDatabase(): Database.Database {
@@ -49,24 +141,171 @@ export function closeDatabase(): void {
   }
 }
 
-export async function createBackup(): Promise<string> {
+export async function createBackup(targetPath?: string): Promise<{ path: string; schemaVersion: number }> {
   console.log('[DB] createBackup: Starting...');
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const backupPath = path.join(getBackupDir(), `flo-backup-${timestamp}.db`);
+  const backupDir = getBackupDir();
+  
+  if (!fs.existsSync(backupDir)) {
+    fs.mkdirSync(backupDir, { recursive: true });
+  }
+  
+  const backupPath = targetPath || path.join(backupDir, `flo-backup-${timestamp}.db`);
   console.log('[DB] createBackup: Target path:', backupPath);
+  
   await db.backup(backupPath);
-  console.log(`[DB] Backup created: ${backupPath}`);
-  return backupPath;
+  
+  const backupDb = new Database(backupPath);
+  backupDb.exec(`
+    CREATE TABLE IF NOT EXISTS _flo_meta (
+      key TEXT PRIMARY KEY,
+      value TEXT
+    )
+  `);
+  
+  const currentVersion = getCurrentSchemaVersion();
+  backupDb.prepare(`INSERT OR REPLACE INTO _flo_meta (key, value) VALUES (?, ?)`)
+    .run('schema_version', String(currentVersion));
+  backupDb.prepare(`INSERT OR REPLACE INTO _flo_meta (key, value) VALUES (?, ?)`)
+    .run('backup_created_at', new Date().toISOString());
+  backupDb.prepare(`INSERT OR REPLACE INTO _flo_meta (key, value) VALUES (?, ?)`)
+    .run('app_version', app.getVersion());
+  backupDb.close();
+  
+  console.log(`[DB] Backup created: ${backupPath} (schema v${currentVersion})`);
+  return { path: backupPath, schemaVersion: currentVersion };
 }
 
-export function restoreBackup(backupPath: string): void {
-  db.close();
-  const dbPath = getDbPath();
-  fs.copyFileSync(backupPath, dbPath);
-  db = new Database(dbPath);
-  db.pragma('journal_mode = WAL');
-  db.pragma('foreign_keys = ON');
-  console.log(`[DB] Restored from: ${backupPath}`);
+function getColumns(dbInstance: Database.Database, tableName: string): string[] {
+  try {
+    const columns = dbInstance.prepare(`PRAGMA table_info(${tableName})`).all() as { name: string }[];
+    return columns.map(col => col.name);
+  } catch {
+    return [];
+  }
+}
+
+function getTables(dbInstance: Database.Database): string[] {
+  try {
+    const tables = dbInstance.prepare(`
+      SELECT name FROM sqlite_master WHERE type='table' 
+      AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_flo_meta'
+    `).all() as { name: string }[];
+    return tables.map(t => t.name);
+  } catch {
+    return [];
+  }
+}
+
+export interface RestoreResult {
+  success: boolean;
+  mode: 'direct' | 'data_only' | 'full';
+  backupSchemaVersion: number;
+  currentSchemaVersion: number;
+  tablesRestored: number;
+  error?: string;
+}
+
+export function restoreBackup(backupPath: string, forceDirect: boolean = false): RestoreResult {
+  console.log('[DB] restoreBackup: Starting restore from:', backupPath);
+  
+  const backupDb = new Database(backupPath, { readonly: true });
+  
+  const metaRow = backupDb.prepare(`SELECT value FROM _flo_meta WHERE key = 'schema_version'`).get() as { value: string } | undefined;
+  const backupSchemaVersion = metaRow ? parseInt(metaRow.value, 10) : 0;
+  backupDb.close();
+  
+  console.log(`[DB] Backup schema version: ${backupSchemaVersion}, Current: ${SCHEMA_VERSION}`);
+  
+  const currentDb = getDatabase();
+  const currentVersion = getCurrentSchemaVersion();
+  
+  if (forceDirect || backupSchemaVersion === currentVersion) {
+    console.log('[DB] restoreBackup: Direct restore (same schema version)');
+    closeDatabase();
+    const dbPath = getDbPath();
+    fs.copyFileSync(backupPath, dbPath);
+    initDatabase();
+    
+    return {
+      success: true,
+      mode: 'direct',
+      backupSchemaVersion,
+      currentSchemaVersion: currentVersion,
+      tablesRestored: getTables(currentDb).length
+    };
+  }
+  
+  console.log('[DB] restoreBackup: Data-only restore (schema version mismatch)');
+  return dataOnlyRestore(backupPath, backupSchemaVersion, currentVersion);
+}
+
+function dataOnlyRestore(backupPath: string, backupVersion: number, currentVersion: number): RestoreResult {
+  const backupDb = new Database(backupPath, { readonly: true });
+  const currentDb = getDatabase();
+  
+  const backupTables = getTables(backupDb);
+  const currentTables = getTables(currentDb);
+  
+  const commonTables = backupTables.filter(t => currentTables.includes(t));
+  let tablesRestored = 0;
+  
+  currentDb.exec('BEGIN IMMEDIATE');
+  
+  try {
+    for (const tableName of commonTables) {
+      const backupCols = getColumns(backupDb, tableName);
+      const currentCols = getColumns(currentDb, tableName);
+      const commonCols = backupCols.filter(c => currentCols.includes(c));
+      
+      if (commonCols.length === 0) continue;
+      
+      currentDb.exec(`DELETE FROM ${tableName}`);
+      
+      const colList = commonCols.join(', ');
+      currentDb.exec(`
+        ATTACH DATABASE '${backupPath}' AS backup;
+        INSERT INTO ${tableName} (${colList}) SELECT ${colList} FROM backup.${tableName}
+      `);
+      
+      tablesRestored++;
+      console.log(`[DB] Restored ${tableName}: ${commonCols.length} columns`);
+    }
+    
+    currentDb.exec('COMMIT');
+    
+    return {
+      success: true,
+      mode: 'data_only',
+      backupSchemaVersion: backupVersion,
+      currentSchemaVersion: currentVersion,
+      tablesRestored
+    };
+  } catch (error: any) {
+    currentDb.exec('ROLLBACK');
+    console.error('[DB] dataOnlyRestore failed:', error);
+    return {
+      success: false,
+      mode: 'data_only',
+      backupSchemaVersion: backupVersion,
+      currentSchemaVersion: currentVersion,
+      tablesRestored: 0,
+      error: error.message
+    };
+  } finally {
+    backupDb.close();
+  }
+}
+
+export function getSchemaVersionFromBackup(backupPath: string): number {
+  try {
+    const backupDb = new Database(backupPath, { readonly: true });
+    const metaRow = backupDb.prepare(`SELECT value FROM _flo_meta WHERE key = 'schema_version'`).get() as { value: string } | undefined;
+    backupDb.close();
+    return metaRow ? parseInt(metaRow.value, 10) : 0;
+  } catch {
+    return 0;
+  }
 }
 
 function getCurrentSchemaVersion(): number {
@@ -75,21 +314,6 @@ function getCurrentSchemaVersion(): number {
     return row ? parseInt(row.value, 10) : 0;
   } catch {
     return 0;
-  }
-}
-
-function dropAllTables(): void {
-  console.log('[DB] Dropping all tables for schema migration...');
-  const tables = [
-    'loyalty_ledger', 'bills', 'order_items', 'orders',
-    'addon_group_product', 'addons', 'addon_groups',
-    'printers', 'kds_pairing_tokens', 'settings',
-    'users', 'staff',  // handle both old and new name
-    'customers', 'tables', 'kitchen_stations',
-    'products', 'categories',
-  ];
-  for (const t of tables) {
-    db.exec(`DROP TABLE IF EXISTS ${t}`);
   }
 }
 

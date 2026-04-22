@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { getDatabase, generateBillNumber, now } from '../db';
+import { getDatabase, generateBillNumber, now, withTxn } from '../db';
 import { notifyKdsUpdate } from '../services/kds';
 
 const router = Router();
@@ -121,70 +121,92 @@ router.post('/:id/payment', (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Bill is already paid' });
     }
 
-    let paidAmount = parseFloat(amount) || bill.total;
-    let walletDebited = false;
+    const paidAmount = parseFloat(amount) || bill.total;
 
+    // Pre-validate wallet balance OUTSIDE the txn so we can return a clean 400 without a rollback.
     if (method === 'wallet') {
       const customer = db.prepare('SELECT * FROM customers WHERE id = ?').get(bill.customer_id) as any;
       if (!customer) {
         return res.status(400).json({ error: 'Customer not found for wallet payment' });
       }
-
       const credits = db.prepare(`
         SELECT COALESCE(SUM(amount), 0) as total FROM loyalty_ledger
         WHERE customer_id = ? AND type = 'credit' AND (expires_at IS NULL OR expires_at > datetime('now'))
       `).get(bill.customer_id) as { total: number };
-
       const debits = db.prepare(`
         SELECT COALESCE(SUM(amount), 0) as total FROM loyalty_ledger
         WHERE customer_id = ? AND type = 'debit'
       `).get(bill.customer_id) as { total: number };
-
       const walletBalance = Math.max(0, credits.total - debits.total);
-
       if (walletBalance < paidAmount) {
         return res.status(400).json({ error: 'Insufficient wallet balance', balance: walletBalance });
       }
-
-      db.prepare(`
-        INSERT INTO loyalty_ledger (customer_id, bill_id, type, amount, description, created_at, updated_at)
-        VALUES (?, ?, 'debit', ?, ?, ?, ?)
-      `).run(bill.customer_id, bill.id, paidAmount, `Payment for bill ${bill.bill_number}`, now(), now());
-
-      walletDebited = true;
     }
 
     const newPaidAmount = bill.paid_amount + paidAmount;
     const newBalance = Math.max(0, bill.total - newPaidAmount);
     const paymentStatus = newBalance <= 0.01 ? 'paid' : 'partial';
 
-    db.prepare(`
-      UPDATE bills SET paid_amount = ?, balance = ?, payment_status = ?,
-        payment_details = COALESCE(payment_details, ?) || ?,
-        paid_at = CASE WHEN ? = 'paid' THEN ? ELSE paid_at END,
-        updated_at = ?
-      WHERE id = ?
-    `).run(
-      newPaidAmount, newBalance, paymentStatus,
-      JSON.stringify({ method, amount: paidAmount, transaction_id, notes, timestamp: now() }),
-      ',' + JSON.stringify({ method, amount: paidAmount, transaction_id, notes, timestamp: now() }),
-      paymentStatus, paymentStatus === 'paid' ? now() : null,
-      now(), req.params.id
-    );
-
-    if (paymentStatus === 'paid') {
-      db.prepare("UPDATE orders SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?")
-        .run(now(), now(), bill.order_id);
-      const order = db.prepare('SELECT table_id FROM orders WHERE id = ?').get(bill.order_id) as any;
-      if (order && order.table_id) {
-        db.prepare("UPDATE tables SET status = 'available', updated_at = ? WHERE id = ?")
-          .run(now(), order.table_id);
+    const existingPayments: any[] = (() => {
+      if (!bill.payment_details) return [];
+      try {
+        const parsed = JSON.parse(bill.payment_details);
+        return Array.isArray(parsed) ? parsed : [parsed];
+      } catch {
+        return [];
       }
-      notifyKdsUpdate();
-    }
+    })();
+    existingPayments.push({ method, amount: paidAmount, transaction_id, notes, timestamp: now() });
 
-    const updatedBill = db.prepare('SELECT * FROM bills WHERE id = ?').get(req.params.id);
-    res.json({ bill: updatedBill, walletDebited });
+    const result = withTxn(() => {
+      let walletDebited = false;
+
+      if (method === 'wallet') {
+        db.prepare(`
+          INSERT INTO loyalty_ledger (customer_id, bill_id, type, amount, description, created_at, updated_at)
+          VALUES (?, ?, 'debit', ?, ?, ?, ?)
+        `).run(bill.customer_id, bill.id, paidAmount, `Payment for bill ${bill.bill_number}`, now(), now());
+        walletDebited = true;
+      }
+
+      db.prepare(`
+        UPDATE bills SET paid_amount = ?, balance = ?, payment_status = ?,
+          payment_details = ?,
+          paid_at = CASE WHEN ? = 'paid' THEN ? ELSE paid_at END,
+          updated_at = ?
+        WHERE id = ?
+      `).run(
+        newPaidAmount, newBalance, paymentStatus,
+        JSON.stringify(existingPayments),
+        paymentStatus, paymentStatus === 'paid' ? now() : null,
+        now(), req.params.id
+      );
+
+      if (paymentStatus === 'paid') {
+        db.prepare("UPDATE orders SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?")
+          .run(now(), now(), bill.order_id);
+
+        // Close any lingering open items on this order — prevents split-brain where
+        // orders.status = 'completed' but order_items.status is still 'pending'/'preparing'.
+        db.prepare(`
+          UPDATE order_items SET status = 'served', updated_at = ?
+          WHERE order_id = ? AND status IN ('pending', 'preparing', 'ready')
+        `).run(now(), bill.order_id);
+
+        const order = db.prepare('SELECT table_id FROM orders WHERE id = ?').get(bill.order_id) as any;
+        if (order && order.table_id) {
+          db.prepare("UPDATE tables SET status = 'available', updated_at = ? WHERE id = ?")
+            .run(now(), order.table_id);
+        }
+      }
+
+      const updatedBill = db.prepare('SELECT * FROM bills WHERE id = ?').get(req.params.id);
+      return { bill: updatedBill, walletDebited };
+    });
+
+    if (paymentStatus === 'paid') notifyKdsUpdate();
+
+    res.json(result);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -222,19 +244,22 @@ router.post('/:id/applyDiscount', (req: Request, res: Response) => {
     const newTotal = Math.max(0, bill.subtotal + bill.tax_amount + bill.delivery_charge + bill.packaging_charge - discountAmount + bill.round_off);
     const newBalance = newTotal - bill.paid_amount;
 
-    db.prepare(`
-      UPDATE bills SET discount_amount = ?, discount_type = ?, discount_value = ?,
-        discount_reason = ?, total = ?, balance = ?, updated_at = ?
-      WHERE id = ?
-    `).run(discountAmount, type, value, reason || null, newTotal, newBalance, now(), req.params.id);
+    const updatedBill = withTxn(() => {
+      db.prepare(`
+        UPDATE bills SET discount_amount = ?, discount_type = ?, discount_value = ?,
+          discount_reason = ?, total = ?, balance = ?, updated_at = ?
+        WHERE id = ?
+      `).run(discountAmount, type, value, reason || null, newTotal, newBalance, now(), req.params.id);
 
-    db.prepare(`
-      UPDATE orders SET discount_amount = ?, discount_type = ?, discount_value = ?,
-        discount_reason = ?, total = ?, updated_at = ?
-      WHERE id = ?
-    `).run(discountAmount, type, value, reason || null, newTotal, now(), bill.order_id);
+      db.prepare(`
+        UPDATE orders SET discount_amount = ?, discount_type = ?, discount_value = ?,
+          discount_reason = ?, total = ?, updated_at = ?
+        WHERE id = ?
+      `).run(discountAmount, type, value, reason || null, newTotal, now(), bill.order_id);
 
-    const updatedBill = db.prepare('SELECT * FROM bills WHERE id = ?').get(req.params.id);
+      return db.prepare('SELECT * FROM bills WHERE id = ?').get(req.params.id);
+    });
+
     res.json({ bill: updatedBill });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
